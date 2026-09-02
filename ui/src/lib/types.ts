@@ -234,3 +234,52 @@ export interface EntryDiff {
   patch: string;
   content?: string;
 }
+
+// ── Canvas (Phase 4) ─────────────────────────────────────────────────────────
+
+export interface CanvasNode {
+  id: string;
+  kind: "text" | "file" | "link" | "group" | "unknown";
+  /** prompt | query | transform, when this is an ARC node. */
+  arcKind?: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  file?: string;
+  text?: string;
+  url?: string;
+  color?: string;
+  /**
+   * "human" or "agent" — who last changed what this card shows. Absent when
+   * there is no record either way, and deliberately not defaulted: a card with
+   * no history gets no border rather than an invented one.
+   */
+  author?: "human" | "agent";
+  authorModel?: string;
+}
+
+export interface CanvasEdge {
+  id: string;
+  fromNode: string;
+  toNode: string;
+  fromSide?: string;
+  toSide?: string;
+  label?: string;
+  color?: string;
+}
+
+export interface CanvasView {
+  path: string;
+  name: string;
+  nodes: CanvasNode[];
+  edges: CanvasEdge[];
+}
+
+export interface NodeGeometry {
+  id: string;
+  x: number;
+  y: number;
+  width?: number;
+  height?: number;
+}

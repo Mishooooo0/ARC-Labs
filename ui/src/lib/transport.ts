@@ -17,9 +17,9 @@
  */
 
 import type {
-  Backlink, DirListing, EntryDiff, GraphData, IndexStats, NoteRef, NoteView,
-  OutgoingLink, Proposal, SaveResult, SearchHit, Status, TagCount, TimelineEntry,
-  TreeView, UnresolvedLink, VaultInfo,
+  Backlink, CanvasView, DirListing, EntryDiff, GraphData, IndexStats, NodeGeometry,
+  NoteRef, NoteView, OutgoingLink, Proposal, SaveResult, SearchHit, Status, TagCount,
+  TimelineEntry, TreeView, UnresolvedLink, VaultInfo,
 } from "./types";
 import { TransportError } from "./types";
 
@@ -35,6 +35,10 @@ export interface Transport {
    * rather than overwriting if the file changed underneath.
    */
   saveNote(path: string, text: string, baseHash: string): Promise<SaveResult>;
+  // ── Canvas (Phase 4) ──────────────────────────────────────────────────────
+  canvas(path: string): Promise<CanvasView>;
+  moveCanvasNodes(path: string, moves: NodeGeometry[]): Promise<SaveResult>;
+
   // ── Ledger (Phase 3) ──────────────────────────────────────────────────────
   timeline(path: string): Promise<TimelineEntry[]>;
   proposals(path: string): Promise<Proposal[]>;
@@ -156,6 +160,14 @@ class ServerTransport implements Transport {
       body: JSON.stringify({ path, text, base_hash: baseHash }),
     });
   }
+  canvas(path: string) {
+    return this.#call<CanvasView>(`canvas?path=${encodeURIComponent(path)}`);
+  }
+  moveCanvasNodes(path: string, moves: NodeGeometry[]) {
+    return this.#call<SaveResult>("canvas/move", {
+      method: "POST", body: JSON.stringify({ path, moves }),
+    });
+  }
   timeline(path: string) {
     return this.#call<TimelineEntry[]>(`timeline?path=${encodeURIComponent(path)}`);
   }
@@ -268,6 +280,12 @@ class DesktopTransport implements Transport {
   }
   saveNote(path: string, text: string, baseHash: string) {
     return this.#invoke<SaveResult>("save_note", { path, text, baseHash });
+  }
+  canvas(path: string) {
+    return this.#invoke<CanvasView>("canvas", { path });
+  }
+  moveCanvasNodes(path: string, moves: NodeGeometry[]) {
+    return this.#invoke<SaveResult>("move_canvas", { path, moves });
   }
   timeline(path: string) {
     return this.#invoke<TimelineEntry[]>("timeline", { path });

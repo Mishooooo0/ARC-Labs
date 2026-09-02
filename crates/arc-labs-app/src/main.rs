@@ -55,6 +55,20 @@ fn save_note(
 }
 
 #[tauri::command]
+fn canvas(api: tauri::State<'_, Arc<Api>>, path: VaultPath) -> CmdResult<arc_labs_api::CanvasView> {
+    api.read_canvas(&path)
+}
+
+#[tauri::command]
+fn move_canvas(
+    api: tauri::State<'_, Arc<Api>>,
+    path: VaultPath,
+    moves: Vec<arc_labs_api::NodeGeometry>,
+) -> CmdResult<SaveResult> {
+    api.move_canvas_nodes(&path, &moves)
+}
+
+#[tauri::command]
 fn timeline(api: tauri::State<'_, Arc<Api>>, path: VaultPath) -> CmdResult<Vec<arc_labs_api::TimelineEntry>> {
     api.timeline(&path)
 }
@@ -209,6 +223,8 @@ fn main() {
             note,
             note_for_edit,
             save_note,
+            canvas,
+            move_canvas,
             timeline,
             proposals,
             entry_diff,

@@ -1,0 +1,21 @@
+[package]
+name         = "arc-labs-canvas"
+description  = "JSONCanvas, round-tripped byte-for-byte. A canvas ARC-LABS touches must still open in Obsidian."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[dependencies]
+arc-labs-core = { workspace = true }
+thiserror     = { workspace = true }
+serde         = { workspace = true }
+# preserve_order is load-bearing, not a preference: Obsidian writes each node's
+# keys in whatever order that node last had, and a plain map would reorder them
+# and break byte-compatibility. See the round-trip tests.
+serde_json    = { workspace = true }
+tracing       = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

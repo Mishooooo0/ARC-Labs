@@ -301,6 +301,126 @@ impl Api {
         self.state.read().expect("state lock poisoned").config.clone()
     }
 
+    // ── Canvas ──────────────────────────────────────────────────────────────
+
+    /// Read a canvas, with each card's authorship resolved from the ledger.
+    pub fn read_canvas(&self, path: &VaultPath) -> ApiResult<CanvasView> {
+        let source = self.with_vault(|v| Ok(v.read_note(path)?))?;
+        let canvas =
+            arc_labs_canvas::Canvas::parse(source.text()).map_err(canvas_err)?;
+        let ledger = self.ledger().ok();
+
+        let nodes = canvas
+            .nodes
+            .iter()
+            .map(|n| {
+                // Constraint 6 on the canvas. A `file` card shows a note, so its
+                // authorship is that note's; a text card belongs to the canvas,
+                // so its authorship is the canvas's. Both are read from real
+                // history — a card with no record gets no border rather than a
+                // default one, because inventing authorship is worse than
+                // omitting it.
+                let source_path = match n.file().and_then(|f| VaultPath::new(f).ok()) {
+                    Some(p) => p,
+                    None => path.clone(),
+                };
+                let (author, author_model) = ledger
+                    .as_ref()
+                    .and_then(|l| l.read(&source_path).ok())
+                    .and_then(|entries| {
+                        entries.iter().rev().find(|e| e.op.touches_file()).map(|e| {
+                            (
+                                match e.actor.kind {
+                                    arc_labs_ledger::ActorKind::Human => "human".to_string(),
+                                    arc_labs_ledger::ActorKind::Agent => "agent".to_string(),
+                                },
+                                e.actor.model.clone(),
+                            )
+                        })
+                    })
+                    .map_or((None, None), |(k, m)| (Some(k), m));
+
+                CanvasNode {
+                    id: n.id().to_string(),
+                    kind: format!("{:?}", n.kind()).to_lowercase(),
+                    arc_kind: n.arc_kind().map(|k| k.as_str().to_string()),
+                    x: n.x(),
+                    y: n.y(),
+                    width: n.width(),
+                    height: n.height(),
+                    file: n.file().map(str::to_string),
+                    text: n.text().map(str::to_string),
+                    url: n.url().map(str::to_string),
+                    color: n.color().map(str::to_string),
+                    author,
+                    author_model,
+                }
+            })
+            .collect();
+
+        let edges = canvas
+            .edges
+            .iter()
+            .map(|e| CanvasEdge {
+                id: e.id().to_string(),
+                from_node: e.from_node().to_string(),
+                to_node: e.to_node().to_string(),
+                from_side: e.from_side().map(str::to_string),
+                to_side: e.to_side().map(str::to_string),
+                label: e.label().map(str::to_string),
+                color: e.as_map().get("color").and_then(|v| v.as_str()).map(str::to_string),
+            })
+            .collect();
+
+        Ok(CanvasView {
+            name: path.file_name().to_string(),
+            path: path.clone(),
+            nodes,
+            edges,
+        })
+    }
+
+    /// Apply node moves and resizes, and save.
+    ///
+    /// Goes through the canvas parser rather than rewriting the file, so
+    /// everything the parser preserves — per-node key order, unknown keys, the
+    /// file's own formatting — survives a drag. Moving one card changes one line.
+    pub fn move_canvas_nodes(
+        &self,
+        path: &VaultPath,
+        moves: &[NodeGeometry],
+    ) -> ApiResult<SaveResult> {
+        let source = self.with_vault(|v| Ok(v.read_note(path)?))?;
+        let mut canvas =
+            arc_labs_canvas::Canvas::parse(source.text()).map_err(canvas_err)?;
+
+        for m in moves {
+            let Some(node) = canvas.node_mut(&m.id) else { continue };
+            node.set_position(m.x, m.y);
+            if let (Some(w), Some(h)) = (m.width, m.height) {
+                node.set_size(w, h);
+            }
+        }
+
+        let out = canvas.serialize();
+        let saved = self.with_vault(|v| Ok(v.write_note(path, &source, &out)?))?;
+
+        if matches!(saved, arc_labs_core::Saved::Written { .. }) {
+            if let Ok(l) = self.ledger() {
+                let _ = l.record_change(
+                    path,
+                    self.human(),
+                    arc_labs_ledger::Op::Edit,
+                    format!("moved {} card(s)", moves.len()),
+                    Some(source.text()),
+                    Some(&out),
+                );
+            }
+            let _ = self.reindex_note(path);
+        }
+        Ok(save_result(saved, &out))
+    }
+
     // ── Ledger ──────────────────────────────────────────────────────────────
 
     fn ledger(&self) -> ApiResult<arc_labs_ledger::Ledger> {
@@ -633,6 +753,12 @@ impl Api {
             entries,
         })
     }
+}
+
+fn canvas_err(e: arc_labs_canvas::CanvasError) -> ApiError {
+    // A malformed canvas is the user's file, not an internal fault, so the
+    // message says what is wrong with it rather than hiding behind "io error".
+    ApiError::new(ErrorCode::NotUtf8, format!("this canvas could not be read: {e}"))
 }
 
 fn ledger_err(e: arc_labs_ledger::LedgerError) -> ApiError {

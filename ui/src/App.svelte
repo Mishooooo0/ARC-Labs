@@ -16,10 +16,12 @@
   import { transport } from "./lib/transport";
   import type {
     Backlink, GraphData, IndexStats, NoteRef, NoteView as Note, OutgoingLink,
-    Proposal, SearchHit, Status, TagCount, TimelineEntry, TreeView, UnresolvedLink,
+    CanvasView, Proposal, SearchHit, Status, TagCount, TimelineEntry, TreeView,
+    UnresolvedLink,
   } from "./lib/types";
   import { TransportError } from "./lib/types";
   import ArcMark from "./components/ArcMark.svelte";
+  import CanvasBoard from "./components/Canvas.svelte";
   import Context from "./components/Context.svelte";
   import DiffView from "./components/DiffView.svelte";
   import Editor, { type SaveState } from "./components/Editor.svelte";
@@ -82,6 +84,8 @@
   let selectedTimelineEntry = $derived(
     selectedEntry === null ? null : (timeline[selectedEntry] ?? null),
   );
+
+  let canvasView = $state<CanvasView | null>(null);
 
   let paletteOpen = $state(false);
   let paletteMode = $state<Mode>("commands");
@@ -155,7 +159,17 @@
     saveDetail = undefined;
     paletteOpen = false;
 
-    if (path.toLowerCase().endsWith(".canvas")) return;
+    if (path.toLowerCase().endsWith(".canvas")) {
+      canvasView = null;
+      try {
+        canvasView = await transport.canvas(path);
+      } catch (e) {
+        error = message(e);
+      }
+      void loadHistory(path);
+      return;
+    }
+    canvasView = null;
 
     try {
       note = await transport.note(path);
@@ -547,11 +561,28 @@
             />
           {/if}
         {:else if isCanvas}
-          <EmptyState
-            title={selected?.split("/").pop() ?? "Canvas"}
-            description="This is a canvas — a spatial board of cards and connections, stored as JSONCanvas. Canvases open in Phase 4; the file is untouched on disk."
-            hint={selected ?? ""}
-          />
+          {#if canvasView}
+            <CanvasBoard
+              canvas={canvasView}
+              onopen={openNote}
+              onmove={async (moves) => {
+                if (!selected) return;
+                try {
+                  await transport.moveCanvasNodes(selected, moves);
+                  canvasView = await transport.canvas(selected);
+                  await loadHistory(selected);
+                } catch (e) {
+                  error = message(e);
+                }
+              }}
+            />
+          {:else}
+            <EmptyState
+              title={selected?.split("/").pop() ?? "Canvas"}
+              description="Reading this canvas…"
+              hint={selected ?? ""}
+            />
+          {/if}
         {:else if editing && note?.text !== undefined}
           {#key note.path}
             <Editor

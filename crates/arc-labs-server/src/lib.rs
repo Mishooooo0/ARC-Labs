@@ -137,6 +137,8 @@ pub fn router(api: Arc<Api>, cfg: &ServerConfig) -> Router {
         .route("/note", get(note))
         .route("/note/edit", get(note_for_edit))
         .route("/note/save", post(save_note))
+        .route("/canvas", get(canvas))
+        .route("/canvas/move", post(move_canvas))
         .route("/timeline", get(timeline))
         .route("/entry-diff", get(entry_diff))
         .route("/proposals", get(proposals))
@@ -256,6 +258,26 @@ async fn save_note(
     Json(body): Json<SaveBody>,
 ) -> WebResult<arc_labs_api::SaveResult> {
     Ok(Json(s.api.write_note(&body.path, &body.text, body.base_hash.as_deref())?))
+}
+
+async fn canvas(
+    State(s): State<Arc<AppState>>,
+    Query(q): Query<NoteQuery>,
+) -> WebResult<arc_labs_api::CanvasView> {
+    Ok(Json(s.api.read_canvas(&q.path)?))
+}
+
+#[derive(Deserialize)]
+struct MoveBody {
+    path: VaultPath,
+    moves: Vec<arc_labs_api::NodeGeometry>,
+}
+
+async fn move_canvas(
+    State(s): State<Arc<AppState>>,
+    Json(b): Json<MoveBody>,
+) -> WebResult<arc_labs_api::SaveResult> {
+    Ok(Json(s.api.move_canvas_nodes(&b.path, &b.moves)?))
 }
 
 async fn timeline(

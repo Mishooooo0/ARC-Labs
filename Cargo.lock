@@ -101,6 +101,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 name = "arc-labs-api"
 version = "0.1.0"
 dependencies = [
+ "arc-labs-canvas",
  "arc-labs-core",
  "arc-labs-index",
  "arc-labs-ledger",
@@ -141,6 +142,18 @@ dependencies = [
  "thiserror 2.0.20",
  "tracing",
  "which",
+]
+
+[[package]]
+name = "arc-labs-canvas"
+version = "0.1.0"
+dependencies = [
+ "arc-labs-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tracing",
 ]
 
 [[package]]

@@ -219,3 +219,82 @@ pub struct EntryDiff {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
 }
+
+// ── Canvas (Phase 4) ─────────────────────────────────────────────────────────
+
+/// One card on a canvas, flattened for the wire.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CanvasNode {
+    pub id: String,
+    /// JSONCanvas type: text | file | link | group | unknown.
+    pub kind: String,
+    /// ARC node type — prompt, query or transform — when this is one of ours.
+    /// Absent for a plain card, which is what Obsidian sees.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arc_kind: Option<String>,
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+
+    /// Who last changed what this card shows: "human", "agent", or absent when
+    /// there is no record either way.
+    ///
+    /// **Constraint 6 on the canvas.** For a `file` card it comes from the
+    /// referenced note's own ledger; for a text card, from the canvas's. It is
+    /// derived from real history, never guessed — a card with no ledger entry
+    /// gets no border rather than a default one, because inventing authorship
+    /// would be worse than omitting it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    /// The model, when an agent last touched it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub author_model: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CanvasEdge {
+    pub id: String,
+    pub from_node: String,
+    pub to_node: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from_side: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub to_side: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CanvasView {
+    pub path: VaultPath,
+    pub name: String,
+    pub nodes: Vec<CanvasNode>,
+    pub edges: Vec<CanvasEdge>,
+}
+
+/// A node move or resize, sent back to be applied.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeGeometry {
+    pub id: String,
+    pub x: f64,
+    pub y: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub height: Option<f64>,
+}
