@@ -192,6 +192,18 @@ pub fn router(api: Arc<Api>, cfg: &ServerConfig) -> Router {
         .with_state(state.clone());
 
     Router::new()
+        // Liveness, deliberately outside the auth layer.
+        //
+        // A probe runs inside the container and has no way to learn the token,
+        // so a health endpoint behind auth is one that always fails: every
+        // container reports unhealthy for ever and an orchestrator restarts it
+        // in a loop. It was doing exactly that until a container was actually
+        // run and inspected.
+        //
+        // Unauthenticated means it must give nothing away. It answers "this
+        // process is serving" and not one word about the vault — no name, no
+        // counts, no version, no whether a vault is even open.
+        .route("/healthz", get(|| async { "ok" }))
         // Canonical, versioned. New clients use this.
         .nest("/api/v1", api_routes.clone())
         // The unversioned alias, kept pointing at the current major so every

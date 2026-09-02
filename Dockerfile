@@ -76,8 +76,12 @@ ENV ARC_LABS_VAULT=/vault \
 VOLUME ["/vault"]
 EXPOSE 7777
 
+# /healthz, not /api/status: the API needs the token this container generates
+# at startup, and a probe running inside the container cannot know it. Pointing
+# the healthcheck at an authenticated route marks every container unhealthy for
+# ever, and an orchestrator then restarts it in a loop.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD curl -fsS http://127.0.0.1:7777/api/status || exit 1
+  CMD curl -fsS http://127.0.0.1:7777/healthz || exit 1
 
 # 0.0.0.0 is required for the port to be reachable from outside the container,
 # and the server generates and prints a token because the bind is not loopback.
