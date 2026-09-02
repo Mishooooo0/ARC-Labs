@@ -177,6 +177,10 @@
 
   async function refresh() {
     try {
+      // The handshake first. Everything below assumes the two ends agree about
+      // what the wire means, and this is where that is established. A major
+      // mismatch throws here rather than halfway through rendering.
+      await transport.version();
       status = await transport.status();
       if (!status.vault) {
         tree = null;

@@ -220,6 +220,11 @@ fn index_stats(api: tauri::State<'_, Arc<Api>>) -> CmdResult<Q::IndexStats> {
     api.index_stats()
 }
 
+#[tauri::command]
+fn api_version(api: tauri::State<'_, Arc<Api>>) -> arc_labs_api::ApiVersion {
+    api.api_version()
+}
+
 // --- Note lifecycle ---------------------------------------------------------
 
 #[tauri::command]
@@ -414,6 +419,7 @@ fn main() {
             browse,
             open_vault,
             pick_folder,
+            api_version,
             create_note,
             rename_note,
             delete_note,

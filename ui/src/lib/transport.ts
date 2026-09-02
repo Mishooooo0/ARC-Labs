@@ -18,14 +18,32 @@
 
 import type {
   Backlink, CanvasRunnability, CanvasView, DirListing, EntryDiff, GraphData, IndexStats,
-  Deleted, LinkSuggestion, NodeGeometry, NoteRef, NoteView, OutgoingLink, PassReport, Proposal, RunStatus,
+  ApiVersion, Deleted, LinkSuggestion, NodeGeometry, NoteRef, NoteView, OutgoingLink, PassReport, Proposal, RunStatus,
   SaveResult, SearchHit, Status, TagCount, TimelineEntry, TreeView, UnresolvedLink, VaultInfo,
   WeaveStatus,
 } from "./types";
-import { TransportError } from "./types";
+import { CLIENT_API_MAJOR, TransportError } from "./types";
 
 export interface Transport {
   readonly kind: "desktop" | "server";
+
+  /**
+   * The handshake. Cached after the first call.
+   *
+   * Everything else on this interface assumes the two ends agree about what the
+   * wire means; this is where that is established rather than assumed.
+   */
+  version(): Promise<ApiVersion>;
+  /**
+   * Whether this deployment can do a thing — `"index"`, `"weave"`, `"mcp"`,
+   * `"events"`, `"browse"`. False before the handshake completes, so callers
+   * must treat it as "not yet" rather than "never".
+   *
+   * Branch on this rather than on version numbers: an older server and a server
+   * built without a feature look the same to the UI, and both should simply not
+   * show it.
+   */
+  can(capability: string): boolean;
   status(): Promise<Status>;
   tree(): Promise<TreeView>;
   note(path: string): Promise<NoteView>;
@@ -140,9 +158,30 @@ function takeToken(): string | null {
   }
 }
 
+/**
+ * Check a handshake and complain loudly about a major we cannot speak.
+ *
+ * A mismatched *major* means a field somewhere changed meaning. Carrying on and
+ * hoping is how a client writes a payload the server will misread, so this
+ * throws. A mismatched *minor* is fine in both directions and says nothing.
+ */
+function checkMajor(v: ApiVersion): ApiVersion {
+  if (v.apiMajor !== CLIENT_API_MAJOR) {
+    throw new TransportError({
+      code: "config",
+      message:
+        `this ARC-LABS client speaks API v${CLIENT_API_MAJOR} and the server speaks ` +
+        `v${v.apiMajor} (server build ${v.server}). Update whichever is older.`,
+    });
+  }
+  return v;
+}
+
 class ServerTransport implements Transport {
   readonly kind = "server" as const;
   #token = takeToken();
+  #version: ApiVersion | null = null;
+  #versionInFlight: Promise<ApiVersion> | null = null;
 
   async #call<T>(path: string, init?: RequestInit): Promise<T> {
     const headers = new Headers(init?.headers);
@@ -174,6 +213,21 @@ class ServerTransport implements Transport {
       throw new TransportError({ code: "io", message: `request failed (${res.status})` });
     }
     return (await res.json()) as T;
+  }
+
+  async version() {
+    if (this.#version) return this.#version;
+    // One request even if twenty callers ask at once during boot.
+    this.#versionInFlight ??= this.#call<ApiVersion>("version").then((v) => {
+      this.#version = checkMajor(v);
+      this.#versionInFlight = null;
+      return this.#version;
+    });
+    return this.#versionInFlight;
+  }
+
+  can(capability: string) {
+    return this.#version?.capabilities.includes(capability) ?? false;
   }
 
   status() {
@@ -352,6 +406,7 @@ class ServerTransport implements Transport {
 
 class DesktopTransport implements Transport {
   readonly kind = "desktop" as const;
+  #version: ApiVersion | null = null;
 
   async #invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
     // Imported lazily and by name so the browser bundle never resolves it.
@@ -363,6 +418,18 @@ class DesktopTransport implements Transport {
       if (e && typeof e === "object" && "code" in e) throw new TransportError(e as never);
       throw new TransportError({ code: "io", message: String(e) });
     }
+  }
+
+  async version() {
+    // In-process, so the majors cannot disagree — the check runs anyway, because
+    // a guarantee that is only true by construction stops being true the moment
+    // the construction changes.
+    this.#version ??= checkMajor(await this.#invoke<ApiVersion>("api_version"));
+    return this.#version;
+  }
+
+  can(capability: string) {
+    return this.#version?.capabilities.includes(capability) ?? false;
   }
 
   status() {

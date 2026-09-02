@@ -468,6 +468,45 @@ impl Api {
         })
     }
 
+    /// The handshake. What this build speaks, and what this deployment can do.
+    ///
+    /// Capabilities are computed from what is actually wired up rather than
+    /// hard-coded, so a client is told the truth about *this* process. The index
+    /// one is the interesting case: an index-backed feature genuinely is not
+    /// available until the index has been built, and a client that hides search
+    /// for ten seconds is behaving better than one that offers a search box
+    /// which errors.
+    pub fn api_version(&self) -> ApiVersion {
+        let mut capabilities = vec![
+            "notes".to_string(),
+            "ledger".to_string(),
+            "canvas".to_string(),
+        ];
+
+        if self.index.lock().expect("index lock poisoned").is_some() {
+            capabilities.push("index".into());
+            // Weave rides on the index, and cannot be offered without one.
+            capabilities.push("weave".into());
+        }
+        capabilities.push("runtime".into());
+        capabilities.push("mcp".into());
+        capabilities.push("events".into());
+        if self.caps.browse_filesystem {
+            capabilities.push("browse".into());
+        }
+        if self.caps.native_folder_picker {
+            capabilities.push("folder-picker".into());
+        }
+
+        ApiVersion {
+            api_major: API_MAJOR,
+            api_minor: API_MINOR,
+            server: env!("CARGO_PKG_VERSION").to_string(),
+            shell: self.caps.shell,
+            capabilities,
+        }
+    }
+
     pub fn config(&self) -> Config {
         self.state
             .read()
@@ -1246,6 +1285,70 @@ mod tests {
     }
 
     // ── Note lifecycle ──────────────────────────────────────────────────────
+
+    #[test]
+    fn the_handshake_reports_this_build() {
+        let (_t, api) = api_with_vault(Capabilities::desktop());
+        let v = api.api_version();
+        assert_eq!(v.api_major, API_MAJOR);
+        assert_eq!(v.api_minor, API_MINOR);
+        assert_eq!(v.server, env!("CARGO_PKG_VERSION"));
+        assert_eq!(v.shell, Shell::Desktop);
+    }
+
+    /// Capabilities describe *this deployment*, not this build. A server that
+    /// cannot browse the filesystem must not advertise that it can.
+    #[test]
+    fn capabilities_follow_the_deployment_not_the_binary() {
+        let (_t, desktop) = api_with_vault(Capabilities::desktop());
+        let (_t2, remote) = api_with_vault(Capabilities::remote_server());
+
+        let d = desktop.api_version().capabilities;
+        let r = remote.api_version().capabilities;
+
+        assert!(d.contains(&"browse".to_string()));
+        assert!(d.contains(&"folder-picker".to_string()));
+        // A remote client has no business browsing the host or opening dialogs
+        // on it, and is told so up front rather than on first use.
+        assert!(!r.contains(&"browse".to_string()));
+        assert!(!r.contains(&"folder-picker".to_string()));
+
+        // What every deployment can do regardless.
+        for always in ["notes", "ledger", "canvas", "events", "mcp"] {
+            assert!(d.contains(&always.to_string()), "desktop lacks {always}");
+            assert!(r.contains(&always.to_string()), "remote lacks {always}");
+        }
+    }
+
+    /// The index is genuinely absent until it is built, and saying so beats
+    /// offering a search box that errors.
+    #[test]
+    fn index_backed_capabilities_appear_only_once_the_index_exists() {
+        let (_t, api) = api_with_vault(Capabilities::desktop());
+        assert!(!api
+            .api_version()
+            .capabilities
+            .contains(&"index".to_string()));
+
+        api.open_index(false).unwrap();
+        let caps = api.api_version().capabilities;
+        assert!(caps.contains(&"index".to_string()));
+        // Weave rides on the index and cannot be offered without one.
+        assert!(caps.contains(&"weave".to_string()));
+    }
+
+    /// The handshake is the one payload whose shape cannot be renegotiated, so
+    /// its field names are pinned by a test rather than by good intentions.
+    #[test]
+    fn the_handshake_wire_shape_is_pinned() {
+        let (_t, api) = api_with_vault(Capabilities::local_server());
+        let json = serde_json::to_value(api.api_version()).unwrap();
+        for field in ["apiMajor", "apiMinor", "server", "shell", "capabilities"] {
+            assert!(json.get(field).is_some(), "the handshake lost {field}");
+        }
+        assert!(json["apiMajor"].is_u64());
+        assert!(json["capabilities"].is_array());
+    }
 
     #[test]
     fn creating_a_note_ledgers_it_and_returns_it_open() {

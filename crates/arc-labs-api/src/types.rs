@@ -431,3 +431,44 @@ pub struct Deleted {
     /// the surface says so rather than implying the note is gone.
     pub recoverable: bool,
 }
+
+// ── The version contract ────────────────────────────────────────────────────
+
+/// What a client and a server agree on before anything else.
+///
+/// The point is that **any client version can talk to any server version**. That
+/// is not achievable by hoping the two were built together; it needs a handshake
+/// with rules, and these are the rules:
+///
+/// - `api_major` changes only when something is **removed or repurposed**. A
+///   client refuses a major it does not know, because the alternative is
+///   guessing at a payload whose meaning changed underneath it.
+/// - `api_minor` increases when something is **added**. A client with a lower
+///   minor works fine; it simply does not ask for the new thing.
+/// - [`capabilities`](Self::capabilities) is the part clients should actually
+///   branch on. Version numbers say what shape the wire has; capabilities say
+///   what this deployment can *do*, and those differ — a headless server has no
+///   folder picker, a build without Ollama has no runtime, and neither is a
+///   version difference.
+///
+/// A field is never removed from this struct and never changes meaning. It is
+/// the one payload that cannot be renegotiated, because it *is* the negotiation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiVersion {
+    /// Breaking. A client that does not know this number must not proceed.
+    pub api_major: u32,
+    /// Additive. Higher means more endpoints exist than an older client knows.
+    pub api_minor: u32,
+    /// The build, for bug reports. Never branch on this.
+    pub server: String,
+    pub shell: Shell,
+    /// What this deployment can do. Branch on these, not on the version.
+    pub capabilities: Vec<String>,
+}
+
+/// The major this build speaks. Bump only for a removal or a change of meaning.
+pub const API_MAJOR: u32 = 1;
+
+/// The minor this build speaks. Bump for every additive change.
+pub const API_MINOR: u32 = 1;

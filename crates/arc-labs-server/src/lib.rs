@@ -178,10 +178,31 @@ pub fn router(api: Arc<Api>, cfg: &ServerConfig) -> Router {
         .route("/browse", get(browse))
         .route("/vault/open", post(open_vault))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth))
-        .with_state(state);
+        .with_state(state.clone());
+
+    // The handshake lives outside the *version* prefix, because a client cannot
+    // ask which version to speak from behind a version-specific path. It stays
+    // behind the token like everything else: on a non-loopback bind, even
+    // "which build are you and what can you do" is more than an unauthenticated
+    // caller needs.
+    let handshake = Router::new()
+        .route("/version", get(api_version))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), auth))
+        .with_state(state.clone());
 
     Router::new()
+        // Canonical, versioned. New clients use this.
+        .nest("/api/v1", api_routes.clone())
+        // The unversioned alias, kept pointing at the current major so every
+        // client written before versioning existed keeps working. It is an
+        // alias, not a second API: when the major changes, this follows it, and
+        // clients that care about stability say /v1 explicitly.
         .nest("/api", api_routes)
+        // The handshake answers on both mounts. A client that only knows
+        // `/api/v1` must still be able to ask what version to speak, and a
+        // client that predates versioning must still find it at `/api`.
+        .nest("/api/v1", handshake.clone())
+        .nest("/api", handshake)
         .fallback_service(static_files)
         .layer(SetResponseHeaderLayer::overriding(
             header::CONTENT_SECURITY_POLICY,
@@ -234,6 +255,11 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
         return false;
     }
     a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+/// `GET /api/version` — the one payload whose shape never changes.
+async fn api_version(State(s): State<Arc<AppState>>) -> Json<arc_labs_api::ApiVersion> {
+    Json(s.api.api_version())
 }
 
 async fn status(State(s): State<Arc<AppState>>) -> Json<arc_labs_api::Status> {

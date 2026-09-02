@@ -387,3 +387,27 @@ export interface Deleted {
   trashedTo?: string;
   recoverable: boolean;
 }
+
+// ── The version contract ────────────────────────────────────────────────
+
+/**
+ * What the server says it is, before anything else is asked of it.
+ *
+ * `apiMajor` changes only when something is removed or repurposed — a client
+ * that does not know the major must refuse rather than guess. `apiMinor` only
+ * ever grows, additively, so an older client is always safe against a newer
+ * server. `capabilities` is what UI code should actually branch on: version
+ * numbers describe the wire, capabilities describe what this deployment can do,
+ * and a headless server missing a folder picker is not a version difference.
+ */
+export interface ApiVersion {
+  apiMajor: number;
+  apiMinor: number;
+  /** The build string. For bug reports. Never branch on it. */
+  server: string;
+  shell: "desktop" | "server";
+  capabilities: string[];
+}
+
+/** The major this UI was written against. */
+export const CLIENT_API_MAJOR = 1;
