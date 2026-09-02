@@ -29,17 +29,31 @@
    * than a default one. The border is a fixed screen-space width, so it stays
    * readable when the whole layer is scaled to 40%.
    */
-  import type { CanvasView } from "../lib/types";
+  import type { CanvasRunnability, CanvasView } from "../lib/types";
 
   let {
     canvas,
+    runnability,
+    activeRun,
     onopen,
     onmove,
+    onrun,
   }: {
     canvas: CanvasView;
+    runnability: CanvasRunnability | null;
+    /** Node ids currently running, so a card can show it without a lookup. */
+    activeRun: Set<string>;
     onopen: (path: string) => void;
     onmove: (moves: { id: string; x: number; y: number }[]) => void;
+    onrun: (nodeId: string) => void;
   } = $props();
+
+  // A cycle disables Run everywhere on the canvas, not just on the cards in it:
+  // a graph with a loop has no execution order at all, so no node on it can be
+  // said to run "before" another.
+  let cycle = $derived(new Set(runnability?.cycle ?? []));
+  let runnable = $derived(new Set(runnability?.runnable ?? []));
+  let hasCycle = $derived(cycle.size > 0);
 
   const GRID = 20;
 
@@ -284,6 +298,8 @@
         class:group={n.kind === "group"}
         data-node={n.id}
         data-author={n.author ?? "none"}
+        class:in-cycle={cycle.has(n.id)}
+        class:running={activeRun.has(n.id)}
         style="left:{p.x}px; top:{p.y}px; width:{n.width}px; height:{n.height}px;
                --edge: {2 / scale}px"
         ondblclick={() => n.file && onopen(n.file)}
@@ -294,6 +310,21 @@
           <span class="title">
             {n.file ? (n.file.split("/").pop() ?? n.file) : n.kind === "link" ? n.url : ""}
           </span>
+          {#if runnable.has(n.id)}
+            <button
+              class="run"
+              disabled={hasCycle || activeRun.has(n.id)}
+              title={hasCycle
+                ? "This canvas has a cycle, so it has no execution order"
+                : "Run this node and everything it depends on"}
+              onclick={(e) => {
+                e.stopPropagation();
+                onrun(n.id);
+              }}
+            >
+              {activeRun.has(n.id) ? "running" : "run"}
+            </button>
+          {/if}
         </div>
 
         {#if live}
@@ -315,6 +346,11 @@
     <span>{Math.round(scale * 100)}%</span>
     <span class="quiet">{liveCount} live</span>
     {#if selection.size}<span class="sel">{selection.size} selected</span>{/if}
+    {#if hasCycle}
+      <span class="cycle-warning">
+        cycle: {runnability?.cycle.join(" → ")} — Run is disabled
+      </span>
+    {/if}
   </div>
 </div>
 
@@ -379,6 +415,36 @@
   }
   .card[data-author="agent"] {
     border-left: var(--edge) solid var(--arc-agent);
+  }
+
+  /* A node in a cycle. Dashed and in the danger colour, and every Run control
+     on the canvas is disabled — a graph with a loop has no execution order, so
+     no node on it can be said to run before another. */
+  .card.in-cycle {
+    border-color: var(--arc-danger);
+    border-style: dashed;
+  }
+  .card.running {
+    border-color: var(--arc-agent);
+  }
+
+  .run {
+    flex: none;
+    margin-left: auto;
+    padding: 0 4px;
+    border: 1px solid var(--arc-accent-dim);
+    border-radius: 2px;
+    color: var(--arc-accent);
+    font-family: var(--arc-font-data);
+    font-size: inherit;
+  }
+  .run:hover:not(:disabled) {
+    background: var(--arc-accent-wash);
+  }
+  .run:disabled {
+    color: var(--arc-fg-faint);
+    border-color: var(--arc-line-strong);
+    cursor: default;
   }
 
   .card.selected {
@@ -451,5 +517,8 @@
   }
   .sel {
     color: var(--arc-accent);
+  }
+  .cycle-warning {
+    color: var(--arc-danger);
   }
 </style>

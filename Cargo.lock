@@ -105,6 +105,7 @@ dependencies = [
  "arc-labs-core",
  "arc-labs-index",
  "arc-labs-ledger",
+ "arc-labs-runtime",
  "async-trait",
  "dunce",
  "serde",
@@ -212,6 +213,22 @@ dependencies = [
  "serde",
  "serde_json",
  "similar",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tracing",
+]
+
+[[package]]
+name = "arc-labs-runtime"
+version = "0.1.0"
+dependencies = [
+ "arc-labs-canvas",
+ "arc-labs-core",
+ "arc-labs-index",
+ "arc-labs-ledger",
+ "blake3",
+ "serde",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.20",
  "tracing",

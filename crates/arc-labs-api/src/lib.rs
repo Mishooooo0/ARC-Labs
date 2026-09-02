@@ -16,10 +16,11 @@
 //! the way to guarantee that is for the capability not to exist yet.
 
 pub mod error;
+pub mod runs;
 pub mod types;
 
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use arc_labs_core::{Config, LineEnding, Vault, VaultPath};
 use arc_labs_index::{query, Index};
@@ -94,6 +95,11 @@ pub struct Api {
     /// separate from `state` so a long index build never blocks a status call,
     /// which is what keeps the indicator moving while indexing runs.
     index: Mutex<Option<Index>>,
+    /// Runs in flight, and recently finished ones.
+    ///
+    /// Its own lock, because a run holds it for the length of a pipeline and
+    /// nothing else should wait on that.
+    runs: Arc<runs::Runs>,
 }
 
 impl Api {
@@ -107,6 +113,7 @@ impl Api {
                 status: VaultStatus::Offline,
             }),
             index: Mutex::new(None),
+            runs: runs::Runs::new(),
         }
     }
 
@@ -299,6 +306,153 @@ impl Api {
 
     pub fn config(&self) -> Config {
         self.state.read().expect("state lock poisoned").config.clone()
+    }
+
+    // ── Runtime ─────────────────────────────────────────────────────────────
+
+    /// Whether a canvas can run, and which cards are executable.
+    ///
+    /// Cheap enough to call on every canvas edit — that is the point. The gate
+    /// says a cycle is marked within 100 ms, so the user finds out while they
+    /// are drawing the loop rather than when they press Run.
+    pub fn canvas_runnability(&self, path: &VaultPath) -> ApiResult<CanvasRunnability> {
+        let source = self.with_vault(|v| Ok(v.read_note(path)?))?;
+        let canvas = arc_labs_canvas::Canvas::parse(source.text()).map_err(canvas_err)?;
+        let graph = arc_labs_runtime::Graph::from_canvas(&canvas);
+
+        let mut runnable: Vec<String> = graph.nodes.keys().cloned().collect();
+        runnable.sort();
+        Ok(CanvasRunnability {
+            cycle: arc_labs_runtime::find_cycle(&graph).unwrap_or_default(),
+            runnable,
+        })
+    }
+
+    /// Start a run on a background thread and return its id immediately.
+    ///
+    /// Non-blocking because a pipeline takes seconds to minutes on this
+    /// hardware, and an HTTP request or an IPC call that blocked for that long
+    /// would freeze the surface that is meant to be showing its progress.
+    pub fn start_run(
+        &self,
+        canvas: &VaultPath,
+        target: &str,
+        approve_egress: bool,
+    ) -> ApiResult<String> {
+        // Fail fast on the things that can be known before any thread starts —
+        // a cycle, or a missing node — so the caller gets a real error rather
+        // than a run id that immediately fails.
+        let check = self.canvas_runnability(canvas)?;
+        if !check.cycle.is_empty() {
+            return Err(ApiError::new(
+                ErrorCode::Config,
+                format!("this canvas has a cycle: {}", check.cycle.join(", ")),
+            ));
+        }
+        if !check.runnable.iter().any(|id| id == target) {
+            return Err(ApiError::new(
+                ErrorCode::NoteNotFound,
+                format!("no runnable node {target} on this canvas"),
+            ));
+        }
+
+        let vault_root = self.with_vault(|v| Ok(v.root().path().to_path_buf()))?;
+        let config = self.config();
+        let id = runs::next_run_id();
+        let cancel = arc_labs_runtime::Cancel::new();
+        self.runs.start(&id, canvas.as_str(), target, cancel.clone());
+
+        let runs = Arc::clone(&self.runs);
+        let canvas_path = canvas.clone();
+        let target = target.to_string();
+        let run_id = id.clone();
+
+        std::thread::spawn(move || {
+            let started = std::time::Instant::now();
+
+            // The thread opens its own handles rather than sharing the API's.
+            // A run must not hold the index lock for minutes while the rest of
+            // the app tries to search.
+            let outcome = (|| -> Result<arc_labs_runtime::RunReport, String> {
+                let vault = Vault::open(&vault_root).map_err(|e| e.public())?;
+                let ledger =
+                    arc_labs_ledger::Ledger::open(&vault_root).map_err(|e| e.public())?;
+                let index = arc_labs_index::Index::open_for_vault(&vault_root).ok();
+
+                let ollama = arc_labs_runtime::Ollama::new(config.model.endpoint.clone());
+                let runner = arc_labs_runtime::Runner {
+                    vault: &vault,
+                    index: index.as_ref(),
+                    ledger: &ledger,
+                    llm: &ollama,
+                    config: &config,
+                    session: run_id.clone(),
+                };
+
+                runner
+                    .run(&canvas_path, &target, approve_egress, &cancel, &mut |event| {
+                        use arc_labs_runtime::Event;
+                        match event {
+                            Event::NodeStarted { id, kind } => {
+                                runs.node_started(&run_id, &id, &kind)
+                            }
+                            Event::Token { id, text } => runs.token(&run_id, &id, &text),
+                            Event::NodeFinished { id, output, cost } => {
+                                runs.node_finished(&run_id, &id, &output, cost)
+                            }
+                            Event::Egress { destination, bytes } => {
+                                runs.egress(&run_id, &destination, bytes)
+                            }
+                        }
+                    })
+                    .map_err(|e| e.to_string())
+            })();
+
+            let elapsed = started.elapsed().as_millis();
+            match outcome {
+                Ok(report) => {
+                    for r in &report.results {
+                        if let Some(path) = &r.proposed_to {
+                            runs.set_proposed(&run_id, &r.id, path);
+                        }
+                    }
+                    runs.finish(&run_id, RunState::Done, None, elapsed);
+                }
+                Err(message) => {
+                    // "Needs approval" is a decision waiting on a person, not a
+                    // failure, and the surface has to tell them apart to know
+                    // whether to show an error or a prompt.
+                    let state = if message.contains("needs approval") {
+                        RunState::NeedsEgressApproval
+                    } else if message.contains("cancelled") {
+                        RunState::Cancelled
+                    } else {
+                        RunState::Failed
+                    };
+                    runs.finish(&run_id, state, Some(message), elapsed);
+                }
+            }
+        });
+
+        Ok(id)
+    }
+
+    pub fn run_status(&self, id: &str) -> ApiResult<RunStatus> {
+        self.runs
+            .get(id)
+            .ok_or_else(|| ApiError::new(ErrorCode::NoteNotFound, format!("no run {id}")))
+    }
+
+    pub fn runs(&self) -> Vec<RunStatus> {
+        self.runs.list()
+    }
+
+    pub fn cancel_run(&self, id: &str) -> ApiResult<()> {
+        if self.runs.cancel(id) {
+            Ok(())
+        } else {
+            Err(ApiError::new(ErrorCode::NoteNotFound, format!("no run {id}")))
+        }
     }
 
     // ── Canvas ──────────────────────────────────────────────────────────────

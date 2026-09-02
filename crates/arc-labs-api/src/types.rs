@@ -298,3 +298,71 @@ pub struct NodeGeometry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub height: Option<f64>,
 }
+
+// ── Runtime (Phase 5) ────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RunState {
+    Running,
+    Done,
+    Cancelled,
+    Failed,
+    /// Blocked waiting for the user to approve sending vault content off the
+    /// machine. A distinct state, not an error: the run has not failed, it is
+    /// waiting for a decision only a person can make.
+    NeedsEgressApproval,
+}
+
+/// Live state of one node in a run.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunNodeState {
+    pub id: String,
+    pub kind: String,
+    pub running: bool,
+    /// Output so far. Grows while a prompt node streams.
+    pub output: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tokens_per_sec: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub elapsed_ms: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peak_rss_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proposed_to: Option<String>,
+}
+
+/// A run, as the surface sees it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunStatus {
+    pub id: String,
+    pub canvas: String,
+    pub target: String,
+    pub state: RunState,
+    pub nodes: Vec<RunNodeState>,
+    pub total_tokens: usize,
+    pub elapsed_ms: u128,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// Where vault bytes are going, while they are going there. Drives the
+    /// persistent in-flight indicator the spec requires.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub egress_to: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub egress_bytes: Option<u64>,
+}
+
+/// Whether a canvas can run at all.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CanvasRunnability {
+    /// Node ids caught in a cycle. Non-empty means Run is disabled and these
+    /// nodes get the marker.
+    pub cycle: Vec<String>,
+    /// Executable node ids, so the surface knows which cards get a Run control.
+    pub runnable: Vec<String>,
+}

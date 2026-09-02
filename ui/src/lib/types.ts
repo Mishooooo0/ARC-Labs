@@ -283,3 +283,46 @@ export interface NodeGeometry {
   width?: number;
   height?: number;
 }
+
+// ── Runtime (Phase 5) ────────────────────────────────────────────────────────
+
+export type RunState =
+  | "running"
+  | "done"
+  | "cancelled"
+  | "failed"
+  /** Waiting for a person to approve sending vault content off the machine. */
+  | "needsEgressApproval";
+
+export interface RunNodeState {
+  id: string;
+  kind: string;
+  running: boolean;
+  /** Grows while a prompt node streams. */
+  output: string;
+  tokens?: number;
+  tokensPerSec?: number;
+  elapsedMs?: number;
+  peakRssBytes?: number;
+  proposedTo?: string;
+}
+
+export interface RunStatus {
+  id: string;
+  canvas: string;
+  target: string;
+  state: RunState;
+  nodes: RunNodeState[];
+  totalTokens: number;
+  elapsedMs: number;
+  error?: string;
+  /** Present while vault bytes are going somewhere. Drives the indicator. */
+  egressTo?: string;
+  egressBytes?: number;
+}
+
+export interface CanvasRunnability {
+  /** Node ids caught in a cycle. Non-empty disables Run. */
+  cycle: string[];
+  runnable: string[];
+}

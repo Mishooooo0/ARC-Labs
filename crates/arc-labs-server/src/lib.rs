@@ -138,6 +138,11 @@ pub fn router(api: Arc<Api>, cfg: &ServerConfig) -> Router {
         .route("/note/edit", get(note_for_edit))
         .route("/note/save", post(save_note))
         .route("/canvas", get(canvas))
+        .route("/canvas/runnable", get(runnability))
+        .route("/run", post(start_run))
+        .route("/run/status", get(run_status))
+        .route("/run/cancel", post(cancel_run))
+        .route("/runs", get(list_runs))
         .route("/canvas/move", post(move_canvas))
         .route("/timeline", get(timeline))
         .route("/entry-diff", get(entry_diff))
@@ -258,6 +263,51 @@ async fn save_note(
     Json(body): Json<SaveBody>,
 ) -> WebResult<arc_labs_api::SaveResult> {
     Ok(Json(s.api.write_note(&body.path, &body.text, body.base_hash.as_deref())?))
+}
+
+async fn runnability(
+    State(s): State<Arc<AppState>>,
+    Query(q): Query<NoteQuery>,
+) -> WebResult<arc_labs_api::CanvasRunnability> {
+    Ok(Json(s.api.canvas_runnability(&q.path)?))
+}
+
+#[derive(Deserialize)]
+struct StartRunBody {
+    path: VaultPath,
+    node: String,
+    #[serde(default)]
+    approve_egress: bool,
+}
+
+async fn start_run(
+    State(s): State<Arc<AppState>>,
+    Json(b): Json<StartRunBody>,
+) -> WebResult<String> {
+    Ok(Json(s.api.start_run(&b.path, &b.node, b.approve_egress)?))
+}
+
+#[derive(Deserialize)]
+struct RunQuery {
+    id: String,
+}
+
+async fn run_status(
+    State(s): State<Arc<AppState>>,
+    Query(q): Query<RunQuery>,
+) -> WebResult<arc_labs_api::RunStatus> {
+    Ok(Json(s.api.run_status(&q.id)?))
+}
+
+async fn cancel_run(
+    State(s): State<Arc<AppState>>,
+    Json(q): Json<RunQuery>,
+) -> WebResult<()> {
+    Ok(Json(s.api.cancel_run(&q.id)?))
+}
+
+async fn list_runs(State(s): State<Arc<AppState>>) -> Json<Vec<arc_labs_api::RunStatus>> {
+    Json(s.api.runs())
 }
 
 async fn canvas(

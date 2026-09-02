@@ -55,6 +55,36 @@ fn save_note(
 }
 
 #[tauri::command]
+fn runnability(api: tauri::State<'_, Arc<Api>>, path: VaultPath) -> CmdResult<arc_labs_api::CanvasRunnability> {
+    api.canvas_runnability(&path)
+}
+
+#[tauri::command]
+fn start_run(
+    api: tauri::State<'_, Arc<Api>>,
+    path: VaultPath,
+    node: String,
+    approve_egress: Option<bool>,
+) -> CmdResult<String> {
+    api.start_run(&path, &node, approve_egress.unwrap_or(false))
+}
+
+#[tauri::command]
+fn run_status(api: tauri::State<'_, Arc<Api>>, id: String) -> CmdResult<arc_labs_api::RunStatus> {
+    api.run_status(&id)
+}
+
+#[tauri::command]
+fn cancel_run(api: tauri::State<'_, Arc<Api>>, id: String) -> CmdResult<()> {
+    api.cancel_run(&id)
+}
+
+#[tauri::command]
+fn list_runs(api: tauri::State<'_, Arc<Api>>) -> Vec<arc_labs_api::RunStatus> {
+    api.runs()
+}
+
+#[tauri::command]
 fn canvas(api: tauri::State<'_, Arc<Api>>, path: VaultPath) -> CmdResult<arc_labs_api::CanvasView> {
     api.read_canvas(&path)
 }
@@ -225,6 +255,11 @@ fn main() {
             save_note,
             canvas,
             move_canvas,
+            runnability,
+            start_run,
+            run_status,
+            cancel_run,
+            list_runs,
             timeline,
             proposals,
             entry_diff,

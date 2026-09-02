@@ -16,8 +16,8 @@
   import { transport } from "./lib/transport";
   import type {
     Backlink, GraphData, IndexStats, NoteRef, NoteView as Note, OutgoingLink,
-    CanvasView, Proposal, SearchHit, Status, TagCount, TimelineEntry, TreeView,
-    UnresolvedLink,
+    CanvasRunnability, CanvasView, Proposal, RunStatus, SearchHit, Status, TagCount,
+    TimelineEntry, TreeView, UnresolvedLink,
   } from "./lib/types";
   import { TransportError } from "./lib/types";
   import ArcMark from "./components/ArcMark.svelte";
@@ -32,6 +32,7 @@
   import Home from "./components/Home.svelte";
   import NoteViewer from "./components/NoteView.svelte";
   import Proposals from "./components/Proposals.svelte";
+  import RunPanel from "./components/RunPanel.svelte";
   import Palette, { type Command, type Mode } from "./components/Palette.svelte";
   import SaveStateBadge from "./components/SaveState.svelte";
   import SearchPane from "./components/SearchPane.svelte";
@@ -86,6 +87,55 @@
   );
 
   let canvasView = $state<CanvasView | null>(null);
+  let runnability = $state<CanvasRunnability | null>(null);
+  let activeRun = $state<RunStatus | null>(null);
+  let runningNodes = $state<Set<string>>(new Set());
+  let lastRunTarget: string | null = null;
+
+  /**
+   * Poll a run while it is in flight.
+   *
+   * 10 Hz: fast enough that streamed text reads as live and the throughput
+   * figure moves smoothly, slow enough that the cost is nothing. See
+   * `arc-labs-api::runs` for why this is a poll rather than a push.
+   */
+  async function watchRun(id: string) {
+    for (;;) {
+      let status: RunStatus;
+      try {
+        status = await transport.runStatus(id);
+      } catch (e) {
+        error = message(e);
+        runningNodes = new Set();
+        return;
+      }
+      activeRun = status;
+      runningNodes = new Set(status.nodes.filter((n) => n.running).map((n) => n.id));
+
+      if (status.state !== "running") {
+        runningNodes = new Set();
+        // A finished run may have left proposals and ledger entries behind.
+        if (selected) {
+          void loadHistory(selected);
+          canvasView = await transport.canvas(selected).catch(() => canvasView);
+        }
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
+
+  async function runNode(nodeId: string, approveEgress = false) {
+    if (!selected) return;
+    error = null;
+    lastRunTarget = nodeId;
+    try {
+      const id = await transport.startRun(selected, nodeId, approveEgress);
+      void watchRun(id);
+    } catch (e) {
+      error = message(e);
+    }
+  }
 
   let paletteOpen = $state(false);
   let paletteMode = $state<Mode>("commands");
@@ -167,9 +217,15 @@
         error = message(e);
       }
       void loadHistory(path);
+      try {
+        runnability = await transport.runnability(path);
+      } catch {
+        runnability = null;
+      }
       return;
     }
     canvasView = null;
+    runnability = null;
 
     try {
       note = await transport.note(path);
@@ -564,12 +620,16 @@
           {#if canvasView}
             <CanvasBoard
               canvas={canvasView}
+              {runnability}
+              activeRun={runningNodes}
+              onrun={(id) => runNode(id)}
               onopen={openNote}
               onmove={async (moves) => {
                 if (!selected) return;
                 try {
                   await transport.moveCanvasNodes(selected, moves);
                   canvasView = await transport.canvas(selected);
+                  runnability = await transport.runnability(selected);
                   await loadHistory(selected);
                 } catch (e) {
                   error = message(e);
@@ -624,6 +684,15 @@
               paletteOpen = true;
             }}
             actionLabel="Find a note"
+          />
+        {/if}
+
+        {#if activeRun}
+          <RunPanel
+            run={activeRun}
+            oncancel={() => activeRun && void transport.cancelRun(activeRun.id)}
+            onapprove={() => lastRunTarget && runNode(lastRunTarget, true)}
+            onclose={() => (activeRun = null)}
           />
         {/if}
 

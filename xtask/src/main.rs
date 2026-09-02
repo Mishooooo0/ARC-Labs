@@ -58,6 +58,12 @@ enum Command {
         #[arg(long)]
         vault: PathBuf,
     },
+    /// Write a file atomically in a loop, for ever. Used by the kill test:
+    /// another process kills this one mid-write and checks the target survived.
+    HammerWrite {
+        #[arg(long)]
+        path: PathBuf,
+    },
     /// Compare a vault against a manifest. Non-zero if a single byte moved.
     Verify {
         #[arg(long)]
@@ -74,6 +80,7 @@ fn main() -> Result<()> {
         Command::Manifest { vault, out } => write_manifest(&vault, &out),
         Command::BenchIndex { vault, runs } => bench_index(&vault, runs),
         Command::BenchQuery { vault } => bench_query(&vault),
+        Command::HammerWrite { path } => hammer_write(&path),
         Command::Verify { vault, manifest } => verify(&vault, &manifest),
     }
 }
@@ -520,6 +527,26 @@ fn bench_query(vault_path: &Path) -> Result<()> {
 
     let _ = std::fs::remove_file(&tmp);
     Ok(())
+}
+
+/// Rewrite `path` atomically, alternating between two large contents, until
+/// killed. The target must never be observed partial, and after a hard kill it
+/// must hold one of the two whole contents.
+fn hammer_write(path: &Path) -> Result<()> {
+    let a = "A".repeat(2_000_000);
+    let b = "B".repeat(2_000_000);
+    std::fs::write(path, a.as_bytes())?;
+    println!("ready");
+    use std::io::Write as _;
+    std::io::stdout().flush()?;
+
+    let mut i = 0u64;
+    loop {
+        let content = if i.is_multiple_of(2) { &b } else { &a };
+        arc_labs_core::atomic::replace(path, content.as_bytes())
+            .map_err(|e| anyhow::anyhow!("{}", e.public()))?;
+        i += 1;
+    }
 }
 
 // ── manifest / verify ───────────────────────────────────────────────────────

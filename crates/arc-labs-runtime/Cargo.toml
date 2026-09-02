@@ -1,0 +1,22 @@
+[package]
+name         = "arc-labs-runtime"
+description  = "The executable canvas: prompt, query and transform nodes run in topological order, with every byte that leaves the machine ledgered."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[dependencies]
+arc-labs-core   = { workspace = true }
+arc-labs-canvas = { workspace = true }
+arc-labs-index  = { workspace = true }
+arc-labs-ledger = { workspace = true }
+thiserror       = { workspace = true }
+serde           = { workspace = true }
+serde_json      = { workspace = true }
+tracing         = { workspace = true }
+blake3.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

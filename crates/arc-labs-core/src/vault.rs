@@ -45,7 +45,15 @@ pub struct Vault {
 
 impl Vault {
     pub fn open(path: impl AsRef<std::path::Path>) -> Result<Vault> {
-        Ok(Vault { root: VaultRoot::open(path)? })
+        let root = VaultRoot::open(path)?;
+        // Clear anything a process that died mid-write left behind. The note
+        // itself always survives such a kill; this is about not leaving
+        // `.arc-write-*` litter in the user's notes folder.
+        let swept = atomic::sweep_temp_files(root.path());
+        if swept > 0 {
+            tracing::info!(count = swept, "swept temp files from an interrupted write");
+        }
+        Ok(Vault { root })
     }
 
     pub fn root(&self) -> &VaultRoot {

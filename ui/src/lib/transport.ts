@@ -17,9 +17,9 @@
  */
 
 import type {
-  Backlink, CanvasView, DirListing, EntryDiff, GraphData, IndexStats, NodeGeometry,
-  NoteRef, NoteView, OutgoingLink, Proposal, SaveResult, SearchHit, Status, TagCount,
-  TimelineEntry, TreeView, UnresolvedLink, VaultInfo,
+  Backlink, CanvasRunnability, CanvasView, DirListing, EntryDiff, GraphData, IndexStats,
+  NodeGeometry, NoteRef, NoteView, OutgoingLink, Proposal, RunStatus, SaveResult, SearchHit,
+  Status, TagCount, TimelineEntry, TreeView, UnresolvedLink, VaultInfo,
 } from "./types";
 import { TransportError } from "./types";
 
@@ -35,6 +35,12 @@ export interface Transport {
    * rather than overwriting if the file changed underneath.
    */
   saveNote(path: string, text: string, baseHash: string): Promise<SaveResult>;
+  // ── Runtime (Phase 5) ─────────────────────────────────────────────────────
+  runnability(path: string): Promise<CanvasRunnability>;
+  startRun(path: string, node: string, approveEgress?: boolean): Promise<string>;
+  runStatus(id: string): Promise<RunStatus>;
+  cancelRun(id: string): Promise<void>;
+
   // ── Canvas (Phase 4) ──────────────────────────────────────────────────────
   canvas(path: string): Promise<CanvasView>;
   moveCanvasNodes(path: string, moves: NodeGeometry[]): Promise<SaveResult>;
@@ -160,6 +166,21 @@ class ServerTransport implements Transport {
       body: JSON.stringify({ path, text, base_hash: baseHash }),
     });
   }
+  runnability(path: string) {
+    return this.#call<CanvasRunnability>(`canvas/runnable?path=${encodeURIComponent(path)}`);
+  }
+  startRun(path: string, node: string, approveEgress = false) {
+    return this.#call<string>("run", {
+      method: "POST",
+      body: JSON.stringify({ path, node, approve_egress: approveEgress }),
+    });
+  }
+  runStatus(id: string) {
+    return this.#call<RunStatus>(`run/status?id=${encodeURIComponent(id)}`);
+  }
+  cancelRun(id: string) {
+    return this.#call<void>("run/cancel", { method: "POST", body: JSON.stringify({ id }) });
+  }
   canvas(path: string) {
     return this.#call<CanvasView>(`canvas?path=${encodeURIComponent(path)}`);
   }
@@ -280,6 +301,18 @@ class DesktopTransport implements Transport {
   }
   saveNote(path: string, text: string, baseHash: string) {
     return this.#invoke<SaveResult>("save_note", { path, text, baseHash });
+  }
+  runnability(path: string) {
+    return this.#invoke<CanvasRunnability>("runnability", { path });
+  }
+  startRun(path: string, node: string, approveEgress = false) {
+    return this.#invoke<string>("start_run", { path, node, approveEgress });
+  }
+  runStatus(id: string) {
+    return this.#invoke<RunStatus>("run_status", { id });
+  }
+  cancelRun(id: string) {
+    return this.#invoke<void>("cancel_run", { id });
   }
   canvas(path: string) {
     return this.#invoke<CanvasView>("canvas", { path });
