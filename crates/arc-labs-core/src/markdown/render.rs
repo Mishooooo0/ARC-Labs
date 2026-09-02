@@ -47,6 +47,20 @@ pub struct RenderedNote {
     pub embeds: Vec<WikiLink>,
     /// Tag names without the leading `#`, in document order, deduplicated.
     pub tags: Vec<String>,
+    /// Headings, in document order. Collected from the same walk that renders,
+    /// so the outline can never disagree with what is on screen.
+    pub headings: Vec<Heading>,
+}
+
+/// A heading, for the outline and for resolving `[[note#anchor]]`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Heading {
+    /// 1-6.
+    pub level: u8,
+    /// The heading's text with markdown syntax removed — what an anchor matches.
+    pub text: String,
+    /// 1-based line in the *body*, after any frontmatter.
+    pub line: usize,
 }
 
 /// URL scheme the UI intercepts. Not a real protocol — a marker that survives
@@ -93,6 +107,22 @@ pub fn render(text: &str) -> RenderedNote {
         .descendants()
         .filter(|n| matches!(n.data.borrow().value, NodeValue::Text(_)))
         .collect();
+
+    // Headings come from a separate, cheap pass over the top level rather than
+    // from the rewrite loop below, which only visits text nodes and would miss
+    // a heading whose text is entirely emphasis or code.
+    for node in root.children() {
+        let (level, line) = {
+            let data = node.data.borrow();
+            match &data.value {
+                NodeValue::Heading(h) => (h.level, data.sourcepos.start.line),
+                _ => continue,
+            }
+        };
+        let mut text = String::new();
+        collect_text(node, &mut text);
+        out.headings.push(Heading { level, text: text.trim().to_string(), line });
+    }
 
     for node in text_nodes {
         // Never rewrite inside an existing link: `[see [[X]]](url)` is one link
@@ -147,7 +177,10 @@ fn rewrite<'a>(
                 link_node(arena, &url, link.display(), pos)
             }
             Item::Tag(name) => {
-                if !out.tags.iter().any(|t| t == name) {
+                // Case-insensitive, keeping the first casing seen. `#Rust` and
+                // `#rust` are one tag — that is what Obsidian does, and counting
+                // them separately would make every tag total wrong.
+                if !out.tags.iter().any(|t| t.eq_ignore_ascii_case(name)) {
                     out.tags.push(name.clone());
                 }
                 link_node(arena, &format!("{SCHEME}tag/{}", pct(name)), &format!("#{name}"), pos)
@@ -159,6 +192,18 @@ fn rewrite<'a>(
 
     if cursor < literal.len() {
         node.insert_before(text_node(arena, &literal[cursor..], pos));
+    }
+}
+
+/// Flatten a node's visible text, ignoring markdown syntax.
+fn collect_text<'a>(node: &'a AstNode<'a>, out: &mut String) {
+    for child in node.descendants() {
+        match &child.data.borrow().value {
+            NodeValue::Text(t) => out.push_str(t),
+            NodeValue::Code(c) => out.push_str(&c.literal),
+            NodeValue::SoftBreak | NodeValue::LineBreak => out.push(' '),
+            _ => {}
+        }
     }
 }
 
@@ -216,6 +261,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn collects_headings_with_levels_and_lines() {
+        let r = render("# One
+
+text
+
+## Two *emphasised*
+
+### `code heading`
+");
+        let got: Vec<(u8, &str)> =
+            r.headings.iter().map(|h| (h.level, h.text.as_str())).collect();
+        assert_eq!(got, [(1, "One"), (2, "Two emphasised"), (3, "code heading")]);
+        // Lines are 1-based and in document order.
+        assert!(r.headings.windows(2).all(|w| w[0].line < w[1].line));
+        assert_eq!(r.headings[0].line, 1);
+    }
+
+    #[test]
+    fn heading_lines_are_relative_to_the_body_not_the_file() {
+        // Frontmatter is split off before parsing, so a heading on the first
+        // body line is line 1 regardless of how long the frontmatter was.
+        let r = render("---
+a: 1
+b: 2
+c: 3
+---
+# First
+");
+        assert_eq!(r.headings[0].line, 1);
+    }
+
+    #[test]
     fn renders_ordinary_markdown() {
         let r = render("# Title\n\nSome **bold** and `code`.\n");
         assert!(r.html.contains("<h1>Title</h1>"));
@@ -269,6 +346,16 @@ mod tests {
     }
 
     /// The bug this whole design exists to prevent.
+    #[test]
+    fn tag_deduplication_ignores_case_and_keeps_the_first_spelling() {
+        // `#Rust` and `#rust` are one tag, as they are in Obsidian. Counting
+        // them separately makes every tag total in the index wrong.
+        let r = render("#Rust then #rust then #RUST\n");
+        assert_eq!(r.tags, ["Rust"], "one tag, spelled as first written");
+        // All three still render as links — only the collected list is deduped.
+        assert_eq!(r.html.matches("arc://tag/").count(), 3);
+    }
+
     #[test]
     fn code_is_never_linkified() {
         let r = render(

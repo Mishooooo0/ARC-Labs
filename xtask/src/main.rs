@@ -45,6 +45,19 @@ enum Command {
         #[arg(long)]
         out: PathBuf,
     },
+    /// Time a full index build against a vault. The Phase 2 gate.
+    BenchIndex {
+        #[arg(long)]
+        vault: PathBuf,
+        /// Repeat, to see the incremental (hash-skip) path as well as the cold one.
+        #[arg(long, default_value_t = 2)]
+        runs: usize,
+    },
+    /// Time the read side of the index: search, backlinks, graph. The Phase 2 gate.
+    BenchQuery {
+        #[arg(long)]
+        vault: PathBuf,
+    },
     /// Compare a vault against a manifest. Non-zero if a single byte moved.
     Verify {
         #[arg(long)]
@@ -59,6 +72,8 @@ fn main() -> Result<()> {
         Command::GenVault { notes, seed, out } => gen_vault(notes, seed, out),
         Command::LintTokens { dir } => lint_tokens(&dir),
         Command::Manifest { vault, out } => write_manifest(&vault, &out),
+        Command::BenchIndex { vault, runs } => bench_index(&vault, runs),
+        Command::BenchQuery { vault } => bench_query(&vault),
         Command::Verify { vault, manifest } => verify(&vault, &manifest),
     }
 }
@@ -357,6 +372,156 @@ fn colour_literal(line: &str) -> Option<&str> {
     None
 }
 
+// ── bench-index ─────────────────────────────────────────────────────────────
+
+fn bench_index(vault_path: &Path, runs: usize) -> Result<()> {
+    let vault = arc_labs_core::Vault::open(vault_path)
+        .map_err(|e| anyhow::anyhow!("{}", e.public()))?;
+
+    // A file on disk, not in memory: the gate is about what the app actually
+    // does, and an in-memory database would flatter the result by skipping
+    // every write to storage.
+    let tmp = std::env::temp_dir().join(format!("arc-bench-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&tmp);
+
+    println!("indexing {}", vault_path.display());
+    for run in 1..=runs {
+        let mut conn = arc_labs_index::open(&tmp)?;
+        let started = std::time::Instant::now();
+        let stats = arc_labs_index::build(&mut conn, &vault, false, |_| {})?;
+        let wall = started.elapsed();
+
+        let kind = if run == 1 { "cold " } else { "warm " };
+        println!(
+            "  {kind}run {run}: {:>6} ms  |  {} notes, {} canvases, {} links, {} tags, {} headings",
+            wall.as_millis(), stats.notes, stats.canvases, stats.links, stats.tags, stats.headings
+        );
+        if stats.skipped_unchanged > 0 {
+            println!("            {} unchanged notes skipped by hash", stats.skipped_unchanged);
+        }
+        if !stats.failed.is_empty() {
+            println!("            {} file(s) could not be indexed:", stats.failed.len());
+            for (p, why) in stats.failed.iter().take(5) {
+                println!("              {p}: {why}");
+            }
+        }
+        let per = wall.as_secs_f64() / stats.notes.max(1) as f64 * 1000.0;
+        println!("            {per:.3} ms/note");
+    }
+
+    if let Ok(meta) = std::fs::metadata(&tmp) {
+        println!("  index size: {:.1} MB", meta.len() as f64 / 1_048_576.0);
+    }
+    let _ = std::fs::remove_file(&tmp);
+    Ok(())
+}
+
+fn percentiles(mut v: Vec<f64>) -> (f64, f64, f64) {
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let at = |q: f64| v[((v.len() as f64 * q) as usize).min(v.len() - 1)];
+    (at(0.50), at(0.95), at(0.99))
+}
+
+fn bench_query(vault_path: &Path) -> Result<()> {
+    let vault = arc_labs_core::Vault::open(vault_path)
+        .map_err(|e| anyhow::anyhow!("{}", e.public()))?;
+    let tmp = std::env::temp_dir().join(format!("arc-q-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&tmp);
+
+    let mut conn = arc_labs_index::open(&tmp)?;
+    let stats = arc_labs_index::build(&mut conn, &vault, false, |_| {})?;
+    println!("indexed {} notes, {} links, {} tags
+", stats.notes, stats.links, stats.tags);
+
+    let s = arc_labs_index::query::stats(&conn)?;
+    println!(
+        "  resolved {} / {} links, {} unresolved, {} distinct tags, {} orphans",
+        s.resolved_links, s.links, s.unresolved_links, s.distinct_tags, s.orphans
+    );
+
+    // Terms drawn from the generator's vocabulary, plus prefixes, so these are
+    // queries that actually match rather than ones that return nothing fast.
+    let queries = [
+        "ledger", "provenance", "canvas topology", "prov", "runtime budget",
+        "weave", "lattice anchor", "sig", "hash graph proposal", "z",
+    ];
+    let mut times = Vec::new();
+    let mut total_hits = 0usize;
+    for _ in 0..20 {
+        for q in queries {
+            let t0 = std::time::Instant::now();
+            let hits = arc_labs_index::query::search(&conn, q, 25)?;
+            times.push(t0.elapsed().as_secs_f64() * 1000.0);
+            total_hits += hits.len();
+        }
+    }
+    let (p50, p95, p99) = percentiles(times.clone());
+    println!(
+        "
+  search      x{:<4}  p50 {p50:.2} ms  p95 {p95:.2} ms  p99 {p99:.2} ms   ({} hits)",
+        times.len(), total_hits
+    );
+
+    // Backlinks for the most-linked notes: the worst case for that query.
+    let hubs: Vec<String> = {
+        let mut stmt = conn.prepare(
+            "SELECT n.path FROM notes n JOIN links l ON l.target_folded = n.stem_folded
+             GROUP BY n.id ORDER BY count(*) DESC LIMIT 20",
+        )?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        out
+    };
+    let mut times = Vec::new();
+    let mut back_total = 0usize;
+    for _ in 0..10 {
+        for h in &hubs {
+            let t0 = std::time::Instant::now();
+            back_total += arc_labs_index::query::backlinks(&conn, h)?.len();
+            times.push(t0.elapsed().as_secs_f64() * 1000.0);
+        }
+    }
+    if !times.is_empty() {
+        let (p50, p95, p99) = percentiles(times.clone());
+        println!("  backlinks   x{:<4}  p50 {p50:.2} ms  p95 {p95:.2} ms  p99 {p99:.2} ms   ({} rows)",
+                 times.len(), back_total);
+    }
+
+    let mut times = Vec::new();
+    for q in ["ledger", "canvas-0", "actor", "z", "meeting"] {
+        for _ in 0..20 {
+            let t0 = std::time::Instant::now();
+            arc_labs_index::query::quick_open(&conn, q, 25)?;
+            times.push(t0.elapsed().as_secs_f64() * 1000.0);
+        }
+    }
+    let (p50, p95, p99) = percentiles(times.clone());
+    println!("  quick-open  x{:<4}  p50 {p50:.2} ms  p95 {p95:.2} ms  p99 {p99:.2} ms", times.len());
+
+    let t0 = std::time::Instant::now();
+    let g = arc_labs_index::query::graph(&conn)?;
+    println!(
+        "  graph            1  {:.1} ms   ({} nodes, {} edges)",
+        t0.elapsed().as_secs_f64() * 1000.0, g.nodes.len(), g.edges.len()
+    );
+
+    let t0 = std::time::Instant::now();
+    let un = arc_labs_index::query::unresolved(&conn, 100)?;
+    println!("  unresolved       1  {:.1} ms   ({} distinct targets)",
+             t0.elapsed().as_secs_f64() * 1000.0, un.len());
+
+    let t0 = std::time::Instant::now();
+    let tags = arc_labs_index::query::tag_counts(&conn)?;
+    println!("  tag browser      1  {:.1} ms   ({} tags)",
+             t0.elapsed().as_secs_f64() * 1000.0, tags.len());
+
+    let _ = std::fs::remove_file(&tmp);
+    Ok(())
+}
+
 // ── manifest / verify ───────────────────────────────────────────────────────
 
 /// A vault's exact contents: path -> "size:hash".
@@ -366,7 +531,14 @@ fn colour_literal(line: &str) -> Option<&str> {
 /// hour of browsing leaves the vault untouched.
 fn manifest_of(vault: &Path) -> Result<BTreeMap<String, String>> {
     let mut out = BTreeMap::new();
-    for entry in walkdir::WalkDir::new(vault).follow_links(false).into_iter().filter_map(Result::ok)
+    for entry in walkdir::WalkDir::new(vault)
+        .follow_links(false)
+        .into_iter()
+        // `.arc/` holds the derived index, which is ours and is meant to appear,
+        // change and be deleted. The gate is that the *user's notes* are
+        // untouched, not that no derived file exists.
+        .filter_entry(|e| e.file_name() != ".arc")
+        .filter_map(Result::ok)
     {
         if !entry.file_type().is_file() {
             continue;

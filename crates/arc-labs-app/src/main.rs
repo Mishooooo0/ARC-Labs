@@ -16,6 +16,7 @@ use arc_labs_api::{
     Api, ApiError, Capabilities, DirListing, NoteView, SaveResult, Status, TreeView, VaultInfo,
 };
 use arc_labs_core::{Config, VaultPath};
+use arc_labs_index::query as Q;
 use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
 
@@ -51,6 +52,56 @@ fn save_note(
     base_hash: Option<String>,
 ) -> CmdResult<SaveResult> {
     api.write_note(&path, &text, base_hash.as_deref())
+}
+
+#[tauri::command]
+fn search(api: tauri::State<'_, Arc<Api>>, q: String, limit: Option<usize>) -> CmdResult<Vec<Q::SearchHit>> {
+    api.search(&q, limit.unwrap_or(50))
+}
+
+#[tauri::command]
+fn quick_open(api: tauri::State<'_, Arc<Api>>, q: String, limit: Option<usize>) -> CmdResult<Vec<Q::NoteRef>> {
+    api.quick_open(&q, limit.unwrap_or(50))
+}
+
+#[tauri::command]
+fn recent(api: tauri::State<'_, Arc<Api>>, limit: Option<usize>) -> CmdResult<Vec<Q::NoteRef>> {
+    api.recent(limit.unwrap_or(20))
+}
+
+#[tauri::command]
+fn backlinks(api: tauri::State<'_, Arc<Api>>, path: VaultPath) -> CmdResult<Vec<Q::Backlink>> {
+    api.backlinks(&path)
+}
+
+#[tauri::command]
+fn outgoing(api: tauri::State<'_, Arc<Api>>, path: VaultPath) -> CmdResult<Vec<Q::OutgoingLink>> {
+    api.outgoing(&path)
+}
+
+#[tauri::command]
+fn unresolved(api: tauri::State<'_, Arc<Api>>, limit: Option<usize>) -> CmdResult<Vec<Q::UnresolvedLink>> {
+    api.unresolved(limit.unwrap_or(100))
+}
+
+#[tauri::command]
+fn tags(api: tauri::State<'_, Arc<Api>>) -> CmdResult<Vec<Q::TagCount>> {
+    api.tags()
+}
+
+#[tauri::command]
+fn tag_notes(api: tauri::State<'_, Arc<Api>>, q: String) -> CmdResult<Vec<Q::NoteRef>> {
+    api.notes_with_tag(&q)
+}
+
+#[tauri::command]
+fn graph(api: tauri::State<'_, Arc<Api>>) -> CmdResult<Q::Graph> {
+    api.graph()
+}
+
+#[tauri::command]
+fn index_stats(api: tauri::State<'_, Arc<Api>>) -> CmdResult<Q::IndexStats> {
+    api.index_stats()
 }
 
 #[tauri::command]
@@ -114,6 +165,16 @@ fn main() {
             note,
             note_for_edit,
             save_note,
+            search,
+            quick_open,
+            recent,
+            backlinks,
+            outgoing,
+            unresolved,
+            tags,
+            tag_notes,
+            graph,
+            index_stats,
             browse,
             open_vault,
             pick_folder

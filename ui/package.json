@@ -29,6 +29,8 @@
     "@lezer/highlight": "^1.2.3",
     "@lezer/markdown": "^1.7.2",
     "@tauri-apps/api": "^2.11.1",
-    "@tauri-apps/plugin-dialog": "^2.7.3"
+    "@tauri-apps/plugin-dialog": "^2.7.3",
+    "@types/d3-force": "^3.0.10",
+    "d3-force": "^3.0.0"
   }
 }

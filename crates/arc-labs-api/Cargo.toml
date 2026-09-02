@@ -16,6 +16,7 @@ tracing       = { workspace = true }
 tokio         = { workspace = true }
 async-trait   = { workspace = true }
 dunce.workspace = true
+arc-labs-index.workspace = true
 
 [dev-dependencies]
 tempfile = "3.27.0"

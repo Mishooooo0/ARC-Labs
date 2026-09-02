@@ -4,5 +4,5 @@ pub mod frontmatter;
 pub mod render;
 pub mod wikilink;
 
-pub use render::{render, RenderedNote};
+pub use render::{render, Heading, RenderedNote};
 pub use wikilink::WikiLink;

@@ -19,7 +19,7 @@ pub mod vault;
 pub use config::{Config, ModelAccess};
 pub use error::{Error, Result};
 pub use fidelity::{FileFidelity, LineEnding, NoteText};
-pub use markdown::{render, RenderedNote, WikiLink};
+pub use markdown::{render, Heading, RenderedNote, WikiLink};
 pub use path::{VaultPath, VaultRoot};
 pub use tree::{Tree, TreeEntry};
 pub use vault::{Saved, Vault};

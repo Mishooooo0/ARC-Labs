@@ -1,0 +1,23 @@
+[package]
+name         = "arc-labs-index"
+description  = "The derived index: SQLite + FTS5 for text, sqlite-vec for embeddings. Deletable and rebuildable at any moment."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[dependencies]
+arc-labs-core = { workspace = true }
+thiserror     = { workspace = true }
+serde         = { workspace = true }
+tracing       = { workspace = true }
+blake3        = { workspace = true }
+rusqlite      = { version = "0.40", features = ["bundled"] }
+# Statically linked rather than loaded at runtime: a loadable extension would be
+# a file that has to ship, be found, and match the platform. Phase 6 needs this
+# to work in a distroless container with nothing beside the binary.
+sqlite-vec    = "0.1"
+
+[dev-dependencies]
+tempfile = "3"

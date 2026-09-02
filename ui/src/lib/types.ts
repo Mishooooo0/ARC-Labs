@@ -120,3 +120,76 @@ export class TransportError extends Error {
     this.code = e.code;
   }
 }
+
+// ── Index-backed types (Phase 2) ─────────────────────────────────────────────
+
+export interface NoteRef {
+  path: string;
+  title: string;
+  isCanvas: boolean;
+}
+
+export interface SearchHit {
+  path: string;
+  title: string;
+  /** Context around the match, matched terms wrapped in «…». */
+  snippet: string;
+}
+
+export interface Backlink {
+  path: string;
+  title: string;
+  target: string;
+  alias?: string;
+  isEmbed: boolean;
+}
+
+export interface OutgoingLink {
+  target: string;
+  anchor?: string;
+  alias?: string;
+  isEmbed: boolean;
+  /** Absent when the link resolves to nothing. Never guessed. */
+  resolvedPath?: string;
+}
+
+export interface UnresolvedLink {
+  target: string;
+  count: number;
+  sources: string[];
+}
+
+export interface TagCount {
+  name: string;
+  count: number;
+}
+
+export interface IndexStats {
+  notes: number;
+  canvases: number;
+  links: number;
+  resolvedLinks: number;
+  unresolvedLinks: number;
+  tags: number;
+  distinctTags: number;
+  orphans: number;
+}
+
+export interface GraphNode {
+  id: number;
+  path: string;
+  title: string;
+  isCanvas: boolean;
+  degree: number;
+}
+
+export interface GraphEdge {
+  source: number;
+  target: number;
+}
+
+export interface GraphData {
+  nodes: GraphNode[];
+  /** Observed links only. Phase 6 inferred edges arrive as a separate field. */
+  edges: GraphEdge[];
+}

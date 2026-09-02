@@ -137,6 +137,16 @@ pub fn router(api: Arc<Api>, cfg: &ServerConfig) -> Router {
         .route("/note", get(note))
         .route("/note/edit", get(note_for_edit))
         .route("/note/save", post(save_note))
+        .route("/search", get(search))
+        .route("/quick-open", get(quick_open))
+        .route("/backlinks", get(backlinks))
+        .route("/outgoing", get(outgoing))
+        .route("/unresolved", get(unresolved))
+        .route("/tags", get(tags))
+        .route("/tag", get(tag_notes))
+        .route("/graph", get(graph))
+        .route("/index-stats", get(index_stats))
+        .route("/recent", get(recent))
         .route("/browse", get(browse))
         .route("/vault/open", post(open_vault))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth))
@@ -239,6 +249,82 @@ async fn save_note(
     Json(body): Json<SaveBody>,
 ) -> WebResult<arc_labs_api::SaveResult> {
     Ok(Json(s.api.write_note(&body.path, &body.text, body.base_hash.as_deref())?))
+}
+
+#[derive(Deserialize)]
+struct TextQuery {
+    #[serde(default)]
+    q: String,
+    #[serde(default = "default_limit")]
+    limit: usize,
+}
+fn default_limit() -> usize {
+    50
+}
+
+async fn search(
+    State(s): State<Arc<AppState>>,
+    Query(q): Query<TextQuery>,
+) -> WebResult<Vec<arc_labs_index::query::SearchHit>> {
+    Ok(Json(s.api.search(&q.q, q.limit)?))
+}
+
+async fn quick_open(
+    State(s): State<Arc<AppState>>,
+    Query(q): Query<TextQuery>,
+) -> WebResult<Vec<arc_labs_index::query::NoteRef>> {
+    Ok(Json(s.api.quick_open(&q.q, q.limit)?))
+}
+
+async fn recent(
+    State(s): State<Arc<AppState>>,
+    Query(q): Query<TextQuery>,
+) -> WebResult<Vec<arc_labs_index::query::NoteRef>> {
+    Ok(Json(s.api.recent(q.limit)?))
+}
+
+async fn backlinks(
+    State(s): State<Arc<AppState>>,
+    Query(q): Query<NoteQuery>,
+) -> WebResult<Vec<arc_labs_index::query::Backlink>> {
+    Ok(Json(s.api.backlinks(&q.path)?))
+}
+
+async fn outgoing(
+    State(s): State<Arc<AppState>>,
+    Query(q): Query<NoteQuery>,
+) -> WebResult<Vec<arc_labs_index::query::OutgoingLink>> {
+    Ok(Json(s.api.outgoing(&q.path)?))
+}
+
+async fn unresolved(
+    State(s): State<Arc<AppState>>,
+    Query(q): Query<TextQuery>,
+) -> WebResult<Vec<arc_labs_index::query::UnresolvedLink>> {
+    Ok(Json(s.api.unresolved(q.limit)?))
+}
+
+async fn tags(
+    State(s): State<Arc<AppState>>,
+) -> WebResult<Vec<arc_labs_index::query::TagCount>> {
+    Ok(Json(s.api.tags()?))
+}
+
+async fn tag_notes(
+    State(s): State<Arc<AppState>>,
+    Query(q): Query<TextQuery>,
+) -> WebResult<Vec<arc_labs_index::query::NoteRef>> {
+    Ok(Json(s.api.notes_with_tag(&q.q)?))
+}
+
+async fn graph(State(s): State<Arc<AppState>>) -> WebResult<arc_labs_index::query::Graph> {
+    Ok(Json(s.api.graph()?))
+}
+
+async fn index_stats(
+    State(s): State<Arc<AppState>>,
+) -> WebResult<arc_labs_index::query::IndexStats> {
+    Ok(Json(s.api.index_stats()?))
 }
 
 #[derive(Deserialize)]

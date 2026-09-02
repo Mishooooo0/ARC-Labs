@@ -1,0 +1,343 @@
+<script lang="ts">
+  /**
+   * The vault graph.
+   *
+   * Layout runs in a worker; drawing goes to a `<canvas>`. Neither is a
+   * preference — the gate is that this stays interactive at 5,000 nodes, and SVG
+   * gives up several thousand elements earlier than that while a main-thread
+   * simulation would eat the frame budget the editor needs.
+   *
+   * ## Only real edges are drawn
+   *
+   * Every line here is a `[[wikilink]]` someone wrote. Links that resolve to
+   * nothing are not drawn at all, because an edge to a note that does not exist
+   * would be a relationship the vault does not contain. When Phase 6 adds
+   * inferred edges they get a dashed, dimmer stroke and arrive in a separate
+   * field on the wire, so this renderer cannot draw one as though it were the
+   * other even by mistake.
+   */
+  import { onMount } from "svelte";
+  import type { GraphData } from "../lib/types";
+  import GraphWorker from "../lib/graph.worker?worker";
+
+  let { data, selected, onopen }: {
+    data: GraphData;
+    selected: string | null;
+    onopen: (path: string) => void;
+  } = $props();
+
+  let canvas = $state<HTMLCanvasElement | null>(null);
+  let host = $state<HTMLDivElement | null>(null);
+  let alpha = $state(1);
+  let hovered = $state<number | null>(null);
+
+  // View transform. Pan and zoom are applied when drawing rather than by moving
+  // the data, so the simulation never learns the viewport exists.
+  let scale = 1;
+  let tx = 0;
+  let ty = 0;
+
+  let positions: Float32Array | null = null;
+  let worker: Worker | null = null;
+  let raf = 0;
+
+  /** Colours are read from the token file at draw time, so the graph follows the
+   *  theme without this component holding a single literal. */
+  function tokens(el: HTMLElement) {
+    const s = getComputedStyle(el);
+    return {
+      edge: s.getPropertyValue("--arc-line-strong").trim(),
+      node: s.getPropertyValue("--arc-fg-dim").trim(),
+      nodeHi: s.getPropertyValue("--arc-accent").trim(),
+      canvasNode: s.getPropertyValue("--arc-fg-faint").trim(),
+      label: s.getPropertyValue("--arc-fg").trim(),
+      bg: s.getPropertyValue("--arc-bg-0").trim(),
+    };
+  }
+
+  function draw() {
+    if (!canvas || !host || !positions) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+    if (canvas.width !== w * dpr || canvas.height !== h * dpr) {
+      canvas.width = w * dpr;
+      canvas.height = h * dpr;
+    }
+    const t = tokens(host);
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    ctx.save();
+    ctx.translate(tx, ty);
+    ctx.scale(scale, scale);
+
+    // Edges in one path. 57,000 individual strokes would be 57,000 state
+    // changes; one path is one.
+    ctx.strokeStyle = t.edge;
+    ctx.globalAlpha = 0.5;
+    ctx.lineWidth = 1 / scale;
+    ctx.beginPath();
+    for (const e of data.edges) {
+      const s = e.source * 2;
+      const d = e.target * 2;
+      ctx.moveTo(positions[s]!, positions[s + 1]!);
+      ctx.lineTo(positions[d]!, positions[d + 1]!);
+    }
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+
+    const selectedIdx = selected ? data.nodes.findIndex((n) => n.path === selected) : -1;
+
+    for (let i = 0; i < data.nodes.length; i++) {
+      const n = data.nodes[i]!;
+      const x = positions[i * 2]!;
+      const y = positions[i * 2 + 1]!;
+      // Degree sets radius, so hubs read as hubs without a legend.
+      const r = (2 + Math.min(7, Math.sqrt(n.degree) * 1.6)) / scale;
+
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fillStyle =
+        i === selectedIdx || i === hovered ? t.nodeHi : n.isCanvas ? t.canvasNode : t.node;
+      ctx.fill();
+    }
+
+    // Labels only when zoomed in far enough to read them, and only for nodes
+    // that earn the space. Drawing 5,000 labels would be illegible and slow.
+    if (scale > 1.4) {
+      ctx.fillStyle = t.label;
+      ctx.font = `${11 / scale}px ui-sans-serif, system-ui, sans-serif`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+      for (let i = 0; i < data.nodes.length; i++) {
+        const n = data.nodes[i]!;
+        if (n.degree < 2 && i !== hovered && i !== selectedIdx) continue;
+        const x = positions[i * 2]!;
+        const y = positions[i * 2 + 1]!;
+        // Skip anything off screen: at 5,000 nodes most of them are.
+        const sx = x * scale + tx;
+        const sy = y * scale + ty;
+        if (sx < -40 || sy < -20 || sx > w + 40 || sy > h + 20) continue;
+        ctx.fillText(n.title.slice(0, 28), x, y + 6 / scale);
+      }
+    }
+
+    ctx.restore();
+  }
+
+  let painted = false;
+
+  /**
+   * Coalesce draws to one per frame.
+   *
+   * The first frame is drawn **synchronously** rather than waiting for a
+   * `requestAnimationFrame`: a graph that appears the instant the layout starts
+   * reads as responsive, and one that waits a frame for its first pixel reads as
+   * broken. It also means the view is correct in environments where rAF is
+   * starved — an occluded window, a background tab — instead of staying blank
+   * until something happens to wake it.
+   */
+  function schedule() {
+    if (!painted) {
+      painted = true;
+      draw();
+      return;
+    }
+    if (raf) return;
+    raf = requestAnimationFrame(() => {
+      raf = 0;
+      draw();
+    });
+  }
+
+  /** Nearest node to a screen point, in graph coordinates. */
+  function nodeAt(clientX: number, clientY: number): number | null {
+    if (!canvas || !positions) return null;
+    const rect = canvas.getBoundingClientRect();
+    const x = (clientX - rect.left - tx) / scale;
+    const y = (clientY - rect.top - ty) / scale;
+    const threshold = 12 / scale;
+
+    let best: number | null = null;
+    let bestDist = threshold * threshold;
+    for (let i = 0; i < data.nodes.length; i++) {
+      const dx = positions[i * 2]! - x;
+      const dy = positions[i * 2 + 1]! - y;
+      const d = dx * dx + dy * dy;
+      if (d < bestDist) {
+        bestDist = d;
+        best = i;
+      }
+    }
+    return best;
+  }
+
+  onMount(() => {
+    const w = new GraphWorker();
+    worker = w;
+    w.onmessage = (e: MessageEvent) => {
+      if (e.data.type === "tick") {
+        positions = e.data.positions as Float32Array;
+        alpha = e.data.alpha;
+        schedule();
+      } else if (e.data.type === "settled") {
+        alpha = 0;
+      }
+    };
+
+    const rect = host?.getBoundingClientRect();
+    // Both arrays are rebuilt as plain objects before crossing to the worker.
+    // `data` arrives as Svelte state, which is a reactive Proxy, and a Proxy
+    // cannot be structured-cloned: passing it straight through throws
+    // DataCloneError and the worker silently never starts.
+    w.postMessage({
+      type: "start",
+      nodes: data.nodes.map((n) => ({ id: n.id, degree: n.degree })),
+      edges: data.edges.map((e) => ({ source: e.source, target: e.target })),
+      width: rect?.width ?? 800,
+      height: rect?.height ?? 600,
+    });
+
+    const onResize = () => {
+      // Force the next schedule() to draw even if a previous frame never fired.
+      raf = 0;
+      schedule();
+    };
+    // Coming back from an occluded or background state: any rAF queued before
+    // is dead, so clear it and repaint from whatever the layout reached.
+    const onVisible = () => {
+      if (document.visibilityState === "visible") {
+        raf = 0;
+        draw();
+      }
+    };
+    window.addEventListener("resize", onResize);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      document.removeEventListener("visibilitychange", onVisible);
+      w.postMessage({ type: "stop" });
+      w.terminate();
+      worker = null;
+      if (raf) cancelAnimationFrame(raf);
+    };
+  });
+
+  function onWheel(e: WheelEvent) {
+    e.preventDefault();
+    const rect = canvas!.getBoundingClientRect();
+    const cx = e.clientX - rect.left;
+    const cy = e.clientY - rect.top;
+    const factor = Math.exp(-e.deltaY * 0.0015);
+    const next = Math.min(8, Math.max(0.1, scale * factor));
+    // Zoom about the pointer, so the thing under the cursor stays under it.
+    tx = cx - ((cx - tx) * next) / scale;
+    ty = cy - ((cy - ty) * next) / scale;
+    scale = next;
+    schedule();
+  }
+
+  // Reactive: it drives the grab/grabbing cursor class in the markup.
+  let dragging = $state(false);
+  let lastX = 0;
+  let lastY = 0;
+  let moved = 0;
+
+  function onPointerDown(e: PointerEvent) {
+    dragging = true;
+    moved = 0;
+    lastX = e.clientX;
+    lastY = e.clientY;
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+  }
+  function onPointerMove(e: PointerEvent) {
+    if (dragging) {
+      const dx = e.clientX - lastX;
+      const dy = e.clientY - lastY;
+      moved += Math.abs(dx) + Math.abs(dy);
+      tx += dx;
+      ty += dy;
+      lastX = e.clientX;
+      lastY = e.clientY;
+      schedule();
+      return;
+    }
+    const hit = nodeAt(e.clientX, e.clientY);
+    if (hit !== hovered) {
+      hovered = hit;
+      schedule();
+    }
+  }
+  function onPointerUp(e: PointerEvent) {
+    dragging = false;
+    // A drag is a pan, not a click. 4 px of slop so a slightly shaky click on a
+    // node still opens it.
+    if (moved < 4) {
+      const hit = nodeAt(e.clientX, e.clientY);
+      if (hit !== null) onopen(data.nodes[hit]!.path);
+    }
+  }
+</script>
+
+<div class="graph" bind:this={host}>
+  <canvas
+    bind:this={canvas}
+    onwheel={onWheel}
+    onpointerdown={onPointerDown}
+    onpointermove={onPointerMove}
+    onpointerup={onPointerUp}
+    class:grabbing={dragging}
+  ></canvas>
+
+  <div class="legend data">
+    <span>{data.nodes.length.toLocaleString()} notes</span>
+    <span>{data.edges.length.toLocaleString()} links</span>
+    {#if alpha > 0.02}<span class="settling">settling…</span>{/if}
+    {#if hovered !== null}
+      <span class="hover">{data.nodes[hovered]?.title}</span>
+    {/if}
+  </div>
+</div>
+
+<style>
+  .graph {
+    position: relative;
+    height: 100%;
+    background: var(--arc-bg-0);
+  }
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    cursor: grab;
+    touch-action: none;
+  }
+  canvas.grabbing {
+    cursor: grabbing;
+  }
+
+  .legend {
+    position: absolute;
+    left: var(--arc-space-4);
+    bottom: var(--arc-space-4);
+    display: flex;
+    gap: var(--arc-space-3);
+    align-items: baseline;
+    color: var(--arc-fg-faint);
+    pointer-events: none;
+  }
+  .settling {
+    color: var(--arc-accent-dim);
+  }
+  .hover {
+    color: var(--arc-fg-dim);
+    max-width: 40ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+</style>

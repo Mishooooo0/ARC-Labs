@@ -16,7 +16,10 @@
  * whether the browser shell can do this too.
  */
 
-import type { DirListing, NoteView, SaveResult, Status, TreeView, VaultInfo } from "./types";
+import type {
+  Backlink, DirListing, GraphData, IndexStats, NoteRef, NoteView, OutgoingLink,
+  SaveResult, SearchHit, Status, TagCount, TreeView, UnresolvedLink, VaultInfo,
+} from "./types";
 import { TransportError } from "./types";
 
 export interface Transport {
@@ -31,6 +34,18 @@ export interface Transport {
    * rather than overwriting if the file changed underneath.
    */
   saveNote(path: string, text: string, baseHash: string): Promise<SaveResult>;
+  // ── Index-backed (Phase 2) ────────────────────────────────────────────────
+  search(q: string, limit?: number): Promise<SearchHit[]>;
+  quickOpen(q: string, limit?: number): Promise<NoteRef[]>;
+  recent(limit?: number): Promise<NoteRef[]>;
+  backlinks(path: string): Promise<Backlink[]>;
+  outgoing(path: string): Promise<OutgoingLink[]>;
+  unresolved(limit?: number): Promise<UnresolvedLink[]>;
+  tags(): Promise<TagCount[]>;
+  tagNotes(tag: string): Promise<NoteRef[]>;
+  graph(): Promise<GraphData>;
+  indexStats(): Promise<IndexStats>;
+
   browse(path?: string): Promise<DirListing>;
   openVault(path: string): Promise<VaultInfo>;
   /** Native folder picker. `null` in a browser, which has none. */
@@ -129,6 +144,37 @@ class ServerTransport implements Transport {
       body: JSON.stringify({ path, text, base_hash: baseHash }),
     });
   }
+  search(q: string, limit = 50) {
+    return this.#call<SearchHit[]>(`search?q=${encodeURIComponent(q)}&limit=${limit}`);
+  }
+  quickOpen(q: string, limit = 50) {
+    return this.#call<NoteRef[]>(`quick-open?q=${encodeURIComponent(q)}&limit=${limit}`);
+  }
+  recent(limit = 20) {
+    return this.#call<NoteRef[]>(`recent?limit=${limit}`);
+  }
+  backlinks(path: string) {
+    return this.#call<Backlink[]>(`backlinks?path=${encodeURIComponent(path)}`);
+  }
+  outgoing(path: string) {
+    return this.#call<OutgoingLink[]>(`outgoing?path=${encodeURIComponent(path)}`);
+  }
+  unresolved(limit = 100) {
+    return this.#call<UnresolvedLink[]>(`unresolved?limit=${limit}`);
+  }
+  tags() {
+    return this.#call<TagCount[]>("tags");
+  }
+  tagNotes(tag: string) {
+    return this.#call<NoteRef[]>(`tag?q=${encodeURIComponent(tag)}`);
+  }
+  graph() {
+    return this.#call<GraphData>("graph");
+  }
+  indexStats() {
+    return this.#call<IndexStats>("index-stats");
+  }
+
   browse(path?: string) {
     const q = path ? `?path=${encodeURIComponent(path)}` : "";
     return this.#call<DirListing>(`browse${q}`);
@@ -178,6 +224,37 @@ class DesktopTransport implements Transport {
   saveNote(path: string, text: string, baseHash: string) {
     return this.#invoke<SaveResult>("save_note", { path, text, baseHash });
   }
+  search(q: string, limit = 50) {
+    return this.#invoke<SearchHit[]>("search", { q, limit });
+  }
+  quickOpen(q: string, limit = 50) {
+    return this.#invoke<NoteRef[]>("quick_open", { q, limit });
+  }
+  recent(limit = 20) {
+    return this.#invoke<NoteRef[]>("recent", { limit });
+  }
+  backlinks(path: string) {
+    return this.#invoke<Backlink[]>("backlinks", { path });
+  }
+  outgoing(path: string) {
+    return this.#invoke<OutgoingLink[]>("outgoing", { path });
+  }
+  unresolved(limit = 100) {
+    return this.#invoke<UnresolvedLink[]>("unresolved", { limit });
+  }
+  tags() {
+    return this.#invoke<TagCount[]>("tags");
+  }
+  tagNotes(tag: string) {
+    return this.#invoke<NoteRef[]>("tag_notes", { q: tag });
+  }
+  graph() {
+    return this.#invoke<GraphData>("graph");
+  }
+  indexStats() {
+    return this.#invoke<IndexStats>("index_stats");
+  }
+
   browse(path?: string) {
     return this.#invoke<DirListing>("browse", { path: path ?? null });
   }

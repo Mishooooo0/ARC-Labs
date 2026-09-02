@@ -3,11 +3,12 @@ resolver = "2"
 members = [
     "crates/arc-labs-core",
     "crates/arc-labs-api",
+    "crates/arc-labs-index",
     "crates/arc-labs-bootstrap",
     "crates/arc-labs-server",
     "crates/arc-labs-cli",
     "crates/arc-labs-app",
-    "xtask",
+    "xtask", "crates/arc-labs-index",
 ]
 
 [workspace.package]
@@ -24,6 +25,7 @@ repository   = "https://github.com/Mishooooo0/ARC-Labs"
 # `cargo test` with no window and no socket.
 arc-labs-core      = { path = "crates/arc-labs-core" }
 arc-labs-api       = { path = "crates/arc-labs-api" }
+arc-labs-index     = { path = "crates/arc-labs-index" }
 arc-labs-bootstrap = { path = "crates/arc-labs-bootstrap" }
 arc-labs-server    = { path = "crates/arc-labs-server" }
 

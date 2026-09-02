@@ -54,6 +54,18 @@ enum Command {
     },
     /// Report on this machine and what ARC-LABS needs from it. Never installs.
     Doctor,
+    /// Rebuild the derived index from the vault.
+    ///
+    /// Safe at any time: the index holds nothing the vault does not, so the
+    /// worst case of running this is that it takes a few seconds.
+    Reindex {
+        /// Re-render every note instead of skipping unchanged ones.
+        #[arg(long)]
+        force: bool,
+        /// Delete the database first. The recovery path, exercised on purpose.
+        #[arg(long)]
+        clean: bool,
+    },
     /// Install the system packages this platform is missing. Asks first.
     Setup {
         /// Skip the prompt. For Docker builds and CI — never the interactive default.
@@ -74,6 +86,7 @@ fn main() -> Result<()> {
 
     match cli.command {
         Some(Command::Doctor) => cmd_doctor(&cli, &config),
+        Some(Command::Reindex { force, clean }) => cmd_reindex(&cli, config, config_path, force, clean),
         Some(Command::Setup { yes }) => cmd_setup(&cli, &config, yes),
         Some(Command::Serve { host, port, ui }) => {
             cmd_serve(cli.vault, config, config_path, host, port, ui)
@@ -152,6 +165,50 @@ fn cmd_setup(cli: &Cli, config: &Config, yes: bool) -> Result<()> {
     Ok(())
 }
 
+fn cmd_reindex(
+    cli: &Cli,
+    config: Config,
+    config_path: Option<PathBuf>,
+    force: bool,
+    clean: bool,
+) -> Result<()> {
+    let Some(vault_path) = resolve_vault(cli.vault.clone(), &config) else {
+        anyhow::bail!("no vault; pass --vault or set ARC_LABS_VAULT");
+    };
+
+    if clean {
+        let db = vault_path.join(".arc").join("index.db");
+        arc_labs_index::remove_database(&db);
+        println!("removed {}", db.display());
+    }
+
+    let api = Api::new(config, config_path, arc_labs_api::Capabilities::desktop());
+    let info = api.open_vault(&vault_path)?;
+    println!("indexing {} ({} notes)…", info.name, info.note_count);
+
+    let stats = api.open_index(force)?;
+    println!(
+        "  {} notes, {} canvases, {} links, {} tags, {} headings in {} ms",
+        stats.notes, stats.canvases, stats.links, stats.tags, stats.headings, stats.elapsed_ms
+    );
+    if stats.skipped_unchanged > 0 {
+        println!("  {} unchanged notes skipped", stats.skipped_unchanged);
+    }
+    if !stats.failed.is_empty() {
+        println!("  {} file(s) could not be indexed:", stats.failed.len());
+        for (p, why) in stats.failed.iter().take(10) {
+            println!("    {p}: {why}");
+        }
+    }
+
+    let s = api.index_stats()?;
+    println!(
+        "  {} of {} links resolve; {} unresolved; {} distinct tags; {} orphan notes",
+        s.resolved_links, s.links, s.unresolved_links, s.distinct_tags, s.orphans
+    );
+    Ok(())
+}
+
 fn cmd_serve(
     vault: Option<PathBuf>,
     config: Config,
@@ -172,7 +229,21 @@ fn cmd_serve(
 
     if let Some(path) = resolve_vault(vault, &config) {
         match api.open_vault(&path) {
-            Ok(info) => tracing::info!(vault = %info.name, notes = info.note_count, "vault open"),
+            Ok(info) => {
+                tracing::info!(vault = %info.name, notes = info.note_count, "vault open");
+                // Index on a background thread so the server starts answering
+                // immediately. The status endpoint reports INDEXING meanwhile,
+                // and index-backed routes say "not ready yet" rather than
+                // blocking — a 5,000-note vault takes a few seconds, and making
+                // the whole app wait for it would be the wrong trade.
+                let api = Arc::clone(&api);
+                std::thread::spawn(move || match api.open_index(false) {
+                    Ok(s) => tracing::info!(
+                        notes = s.notes, links = s.links, ms = s.elapsed_ms, "index ready"
+                    ),
+                    Err(e) => tracing::warn!(error = %e, "could not build the index"),
+                });
+            }
             // Not fatal: the first-run screen exists exactly for this.
             Err(e) => tracing::warn!(error = %e, "could not open the configured vault"),
         }

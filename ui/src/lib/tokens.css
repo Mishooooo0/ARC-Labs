@@ -54,6 +54,11 @@
   --arc-agent: #5b8fd6;
   --arc-agent-wash: #16202e;
 
+  /* Overlay ground behind a modal surface. A token rather than a color-mix at
+     the call site, so each theme can choose its own weight — a light theme needs
+     a very different scrim from a dark one. */
+  --arc-scrim: rgba(8, 10, 12, 0.72);
+
   /* ── Status. Distinct from both reserved hues. ────────────────────────── */
   --arc-danger: #c96a68;
   --arc-warn: #b8925a;
@@ -141,6 +146,7 @@
 
   --arc-danger: #a33f3d;
   --arc-warn: #8a6420;
+  --arc-scrim: rgba(60, 60, 55, 0.34);
 }
 
 /* ── ARC Terminal ─────────────────────────────────────────────────────────
@@ -175,6 +181,7 @@
 
   --arc-danger: #b8706a;
   --arc-warn: #8a8a8a;
+  --arc-scrim: rgba(0, 0, 0, 0.8);
 
   --arc-font-ui: var(--arc-font-data);
   --arc-font-prose: var(--arc-font-data);

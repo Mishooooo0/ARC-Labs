@@ -19,9 +19,10 @@ pub mod error;
 pub mod types;
 
 use std::path::{Path, PathBuf};
-use std::sync::RwLock;
+use std::sync::{Mutex, RwLock};
 
 use arc_labs_core::{Config, LineEnding, Vault, VaultPath};
+use arc_labs_index::{query, Index};
 
 pub use error::{ApiError, ApiResult, ErrorCode};
 pub use types::*;
@@ -86,6 +87,13 @@ struct State {
 pub struct Api {
     caps: Capabilities,
     state: RwLock<State>,
+    /// The derived index.
+    ///
+    /// A `Mutex` rather than an `RwLock`: the underlying store serialises access
+    /// anyway, so one lock is honest about what is actually happening. It is
+    /// separate from `state` so a long index build never blocks a status call,
+    /// which is what keeps the indicator moving while indexing runs.
+    index: Mutex<Option<Index>>,
 }
 
 impl Api {
@@ -98,6 +106,7 @@ impl Api {
                 vault: None,
                 status: VaultStatus::Offline,
             }),
+            index: Mutex::new(None),
         }
     }
 
@@ -229,7 +238,7 @@ impl Api {
         text: &str,
         base_hash: Option<&str>,
     ) -> ApiResult<SaveResult> {
-        self.with_vault(|v| {
+        let result = self.with_vault(|v| {
             let current = v.read_note(path)?;
             if let Some(base) = base_hash {
                 if current.content_hash() != base {
@@ -252,11 +261,123 @@ impl Api {
                     SaveResult { written: false, bytes: 0, hash }
                 }
             })
-        })
+        })?;
+
+        // Refresh this note's index rows. Without it, search, backlinks and the
+        // graph go stale the moment anything is edited — and a search index that
+        // disagrees with the vault is worse than no search index.
+        if result.written {
+            if let Err(e) = self.reindex_note(path) {
+                tracing::warn!(error = %e, path = %path, "could not reindex after save");
+            }
+        }
+        Ok(result)
     }
 
     pub fn config(&self) -> Config {
         self.state.read().expect("state lock poisoned").config.clone()
+    }
+
+    // ── Index ───────────────────────────────────────────────────────────────
+
+    /// Open (or create) the index for the current vault and bring it up to date.
+    ///
+    /// Called after opening a vault. Blocking: the caller decides whether to run
+    /// it on a background thread, because the desktop shell and the server want
+    /// different answers.
+    ///
+    /// A corrupt or stale-schema index is **deleted and rebuilt** rather than
+    /// migrated. That is the whole point of a derived cache: the recovery path
+    /// for anything going wrong is to throw it away, and exercising that path
+    /// routinely is what keeps it working.
+    pub fn open_index(&self, force: bool) -> ApiResult<arc_labs_index::BuildStats> {
+        let root = {
+            let state = self.state.read().expect("state lock poisoned");
+            let vault = state.vault.as_ref().ok_or_else(ApiError::no_vault)?;
+            vault.root().path().to_path_buf()
+        };
+        let mut index = Index::open_for_vault(&root).map_err(index_err)?;
+
+        self.set_status(VaultStatus::Indexing);
+        let result = {
+            let state = self.state.read().expect("state lock poisoned");
+            let vault = state.vault.as_ref().ok_or_else(ApiError::no_vault)?;
+            index.build(vault, force, |_| {})
+        };
+        self.set_status(VaultStatus::Online);
+
+        let stats = result.map_err(index_err)?;
+        *self.index.lock().expect("index lock poisoned") = Some(index);
+        Ok(stats)
+    }
+
+    fn set_status(&self, status: VaultStatus) {
+        self.state.write().expect("state lock poisoned").status = status;
+    }
+
+    fn with_index<T>(
+        &self,
+        f: impl FnOnce(&Index) -> std::result::Result<T, arc_labs_index::IndexError>,
+    ) -> ApiResult<T> {
+        let guard = self.index.lock().expect("index lock poisoned");
+        let index = guard
+            .as_ref()
+            .ok_or_else(|| ApiError::new(ErrorCode::NoVault, "the index is not ready yet"))?;
+        f(index).map_err(index_err)
+    }
+
+    pub fn search(&self, q: &str, limit: usize) -> ApiResult<Vec<query::SearchHit>> {
+        self.with_index(|i| i.search(q, limit.min(200)))
+    }
+
+    pub fn quick_open(&self, q: &str, limit: usize) -> ApiResult<Vec<query::NoteRef>> {
+        self.with_index(|i| i.quick_open(q, limit.min(200)))
+    }
+
+    pub fn backlinks(&self, path: &VaultPath) -> ApiResult<Vec<query::Backlink>> {
+        let p = path.as_str().to_string();
+        self.with_index(move |i| i.backlinks(&p))
+    }
+
+    pub fn outgoing(&self, path: &VaultPath) -> ApiResult<Vec<query::OutgoingLink>> {
+        let p = path.as_str().to_string();
+        self.with_index(move |i| i.outgoing(&p))
+    }
+
+    pub fn unresolved(&self, limit: usize) -> ApiResult<Vec<query::UnresolvedLink>> {
+        self.with_index(|i| i.unresolved(limit.min(500)))
+    }
+
+    pub fn tags(&self) -> ApiResult<Vec<query::TagCount>> {
+        self.with_index(|i| i.tag_counts())
+    }
+
+    pub fn notes_with_tag(&self, tag: &str) -> ApiResult<Vec<query::NoteRef>> {
+        let t = tag.to_string();
+        self.with_index(move |i| i.notes_with_tag(&t))
+    }
+
+    pub fn graph(&self) -> ApiResult<query::Graph> {
+        self.with_index(|i| i.graph())
+    }
+
+    pub fn index_stats(&self) -> ApiResult<query::IndexStats> {
+        self.with_index(|i| i.stats())
+    }
+
+    pub fn recent(&self, limit: usize) -> ApiResult<Vec<query::NoteRef>> {
+        self.with_index(|i| i.recent(limit.min(100)))
+    }
+
+    /// Re-index one note after it changed. Cheap enough to call on every save.
+    pub fn reindex_note(&self, path: &VaultPath) -> ApiResult<()> {
+        let state = self.state.read().expect("state lock poisoned");
+        let vault = state.vault.as_ref().ok_or_else(ApiError::no_vault)?;
+        let mut guard = self.index.lock().expect("index lock poisoned");
+        if let Some(index) = guard.as_mut() {
+            index.reindex_note(vault, path).map_err(index_err)?;
+        }
+        Ok(())
     }
 
     /// List directories under `path` so a browser client can choose a vault.
@@ -299,6 +420,17 @@ impl Api {
             path: dir.display().to_string(),
             entries,
         })
+    }
+}
+
+fn index_err(e: arc_labs_index::IndexError) -> ApiError {
+    // The full form can name the database path; the public form must not.
+    tracing::debug!(error = %e, "index error");
+    match e {
+        arc_labs_index::IndexError::SchemaMismatch { .. } => {
+            ApiError::new(ErrorCode::Config, "the index was built by a different version")
+        }
+        _ => ApiError::new(ErrorCode::Io, "the index could not be read"),
     }
 }
 
