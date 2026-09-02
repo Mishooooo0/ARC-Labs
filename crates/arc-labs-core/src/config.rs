@@ -35,6 +35,9 @@ pub struct Config {
 
     #[serde(default)]
     pub model: ModelConfig,
+
+    #[serde(default)]
+    pub weave: WeaveConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -50,7 +53,11 @@ pub struct UiConfig {
 
 impl Default for UiConfig {
     fn default() -> Self {
-        UiConfig { theme: "arc-dark".into(), motion: 1.0, density: Density::Comfortable }
+        UiConfig {
+            theme: "arc-dark".into(),
+            motion: 1.0,
+            density: Density::Comfortable,
+        }
     }
 }
 
@@ -84,6 +91,42 @@ impl Default for ModelConfig {
     }
 }
 
+/// The background link-suggestion daemon.
+///
+/// Every field here is a ceiling rather than a target. Weave shares a machine
+/// with the editor and loses every argument with it, so the knobs are the ones
+/// that make it quieter, not faster.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WeaveConfig {
+    /// Off by default.
+    ///
+    /// It embeds every note in the vault, which on a first run is real work on
+    /// someone else's machine. That is a thing to opt into, not to discover.
+    pub enabled: bool,
+    /// Cosine similarity above which a pair is worth suggesting.
+    ///
+    /// Deliberately high. An inbox full of weak suggestions trains you to ignore
+    /// it, which costs more than showing nothing would.
+    pub threshold: f64,
+    /// Fraction of one core, averaged over a minute. The spec's ceiling is 0.15
+    /// and this cannot exceed it.
+    pub cpu_fraction: f64,
+    /// Seconds between passes when there is nothing left to do.
+    pub interval_secs: u64,
+}
+
+impl Default for WeaveConfig {
+    fn default() -> Self {
+        WeaveConfig {
+            enabled: false,
+            threshold: 0.82,
+            cpu_fraction: 0.15,
+            interval_secs: 60,
+        }
+    }
+}
+
 /// Where vault bytes are allowed to go. Not merely configuration — every choice
 /// other than `LocalOnly` produces an `egress` ledger entry per run (Phase 5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -111,7 +154,10 @@ impl Config {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Config::default()),
             Err(e) => return Err(Error::io(path, e)),
         };
-        Config::parse(&text).map_err(|reason| Error::Config { path: path.to_path_buf(), reason })
+        Config::parse(&text).map_err(|reason| Error::Config {
+            path: path.to_path_buf(),
+            reason,
+        })
     }
 
     pub fn parse(text: &str) -> std::result::Result<Config, String> {
@@ -126,7 +172,9 @@ impl Config {
     /// Vault root from the environment, if set. Checked before the config file
     /// so `ARC_LABS_VAULT=/vault` works in Docker with no config at all.
     pub fn vault_from_env() -> Option<PathBuf> {
-        std::env::var_os("ARC_LABS_VAULT").map(PathBuf::from).filter(|p| !p.as_os_str().is_empty())
+        std::env::var_os("ARC_LABS_VAULT")
+            .map(PathBuf::from)
+            .filter(|p| !p.as_os_str().is_empty())
     }
 
     /// Ledger actor id: configured value, else the OS user, else `unknown`.
@@ -166,7 +214,10 @@ mod tests {
     fn a_typo_is_a_hard_error_not_a_silent_default() {
         // The entire reason for deny_unknown_fields.
         let err = Config::parse("[ui]\nthemme = \"arc-light\"\n").unwrap_err();
-        assert!(err.contains("themme") || err.contains("unknown"), "unhelpful error: {err}");
+        assert!(
+            err.contains("themme") || err.contains("unknown"),
+            "unhelpful error: {err}"
+        );
 
         assert!(Config::parse("vaultt = \"/notes\"\n").is_err());
         assert!(Config::parse("[modle]\nendpoint = \"x\"\n").is_err());
@@ -183,7 +234,10 @@ mod tests {
         let c = Config {
             vault: Some(PathBuf::from("/notes")),
             actor_id: Some("mishal".into()),
-            model: ModelConfig { access: ModelAccess::AskEachRun, ..Default::default() },
+            model: ModelConfig {
+                access: ModelAccess::AskEachRun,
+                ..Default::default()
+            },
             ..Default::default()
         };
 

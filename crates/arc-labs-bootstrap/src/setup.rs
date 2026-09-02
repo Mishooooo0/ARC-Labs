@@ -71,7 +71,11 @@ pub fn plan(report: &Report) -> Plan {
         manager.install_command(&packages).into_iter().collect()
     };
 
-    Plan { manager, packages: packages.iter().map(|p| p.to_string()).collect(), commands }
+    Plan {
+        manager,
+        packages: packages.iter().map(|p| p.to_string()).collect(),
+        commands,
+    }
 }
 
 #[derive(Debug)]
@@ -106,7 +110,11 @@ pub fn execute(plan: &Plan, confirm: impl FnOnce(&str) -> bool) -> Outcome {
             Ok(s) if s.success() => {}
             // Carry on rather than stopping: a machine that got three of four
             // packages is closer to working, and `doctor` will name what is left.
-            Ok(s) => failed.push(format!("{} (exit {})", cmd.join(" "), s.code().unwrap_or(-1))),
+            Ok(s) => failed.push(format!(
+                "{} (exit {})",
+                cmd.join(" "),
+                s.code().unwrap_or(-1)
+            )),
             Err(e) => failed.push(format!("{} ({e})", cmd.join(" "))),
         }
     }
@@ -173,7 +181,10 @@ mod tests {
     fn the_plan_shows_literal_commands_because_a_summary_is_not_consent() {
         let p = plan(&report_with(PackageManager::Apt, &["webkit2gtk"]));
         let text = p.render();
-        assert!(text.contains("sudo apt-get install -y libwebkit2gtk-4.1-dev"), "got:\n{text}");
+        assert!(
+            text.contains("sudo apt-get install -y libwebkit2gtk-4.1-dev"),
+            "got:\n{text}"
+        );
         assert!(text.contains("No vault content is read or sent"));
     }
 
@@ -199,6 +210,9 @@ mod tests {
             shown = text.to_string();
             false
         });
-        assert!(shown.contains("apt-get"), "the user must see the command before deciding");
+        assert!(
+            shown.contains("apt-get"),
+            "the user must see the command before deciding"
+        );
     }
 }

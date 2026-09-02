@@ -91,9 +91,14 @@ impl PackageManager {
             PackageManager::Pacman => s(&["sudo", "pacman", "-S", "--needed", "--noconfirm"]),
             PackageManager::Zypper => s(&["sudo", "zypper", "install", "-y"]),
             PackageManager::Apk => s(&["sudo", "apk", "add"]),
-            PackageManager::Winget => {
-                s(&["winget", "install", "--accept-package-agreements", "--accept-source-agreements", "-e", "--id"])
-            }
+            PackageManager::Winget => s(&[
+                "winget",
+                "install",
+                "--accept-package-agreements",
+                "--accept-source-agreements",
+                "-e",
+                "--id",
+            ]),
             PackageManager::Brew => s(&["brew", "install"]),
             PackageManager::None => return None,
         };
@@ -121,7 +126,11 @@ pub struct Platform {
 impl Platform {
     pub fn detect() -> Platform {
         let os = Os::detect();
-        let (distro, distro_name) = if os == Os::Linux { read_os_release() } else { (None, None) };
+        let (distro, distro_name) = if os == Os::Linux {
+            read_os_release()
+        } else {
+            (None, None)
+        };
         Platform {
             os,
             arch: std::env::consts::ARCH.to_string(),
@@ -212,24 +221,35 @@ mod tests {
 
         if p.os == Os::Linux {
             // A Linux box without any known package manager is worth knowing about.
-            assert!(p.distro.is_some() || p.in_container, "no /etc/os-release outside a container");
+            assert!(
+                p.distro.is_some() || p.in_container,
+                "no /etc/os-release outside a container"
+            );
         }
     }
 
     #[test]
     fn install_commands_are_shaped_per_manager() {
-        let apt = PackageManager::Apt.install_command(&["libwebkit2gtk-4.1-dev"]).unwrap();
+        let apt = PackageManager::Apt
+            .install_command(&["libwebkit2gtk-4.1-dev"])
+            .unwrap();
         assert_eq!(apt[..4], ["sudo", "apt-get", "install", "-y"]);
         assert_eq!(apt.last().unwrap(), "libwebkit2gtk-4.1-dev");
 
-        let pac = PackageManager::Pacman.install_command(&["webkit2gtk"]).unwrap();
+        let pac = PackageManager::Pacman
+            .install_command(&["webkit2gtk"])
+            .unwrap();
         assert!(pac.contains(&"--noconfirm".to_string()));
 
         // winget takes one id at a time via -e --id; the caller loops.
-        let win = PackageManager::Winget.install_command(&["Ollama.Ollama"]).unwrap();
+        let win = PackageManager::Winget
+            .install_command(&["Ollama.Ollama"])
+            .unwrap();
         assert!(win.contains(&"--id".to_string()));
 
-        assert!(PackageManager::None.install_command(&["anything"]).is_none());
+        assert!(PackageManager::None
+            .install_command(&["anything"])
+            .is_none());
     }
 
     #[test]

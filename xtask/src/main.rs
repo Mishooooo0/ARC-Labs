@@ -13,6 +13,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 
+mod audit;
+
 #[derive(Parser)]
 #[command(name = "xtask", about = "ARC-LABS build tooling")]
 struct Cli {
@@ -64,6 +66,21 @@ enum Command {
         #[arg(long)]
         path: PathBuf,
     },
+    /// The Phase 6 gate: a week of agent traffic through a real MCP subprocess,
+    /// audited against the vault's git history.
+    ///
+    /// Destructive to the vault it is pointed at — it commits, proposes and
+    /// accepts. Point it at a copy.
+    AuditAgents {
+        #[arg(long)]
+        vault: PathBuf,
+        /// Days of agent activity to simulate.
+        #[arg(long, default_value_t = 7)]
+        days: usize,
+        /// The `arc-labs` binary to talk to. Defaults to target/debug.
+        #[arg(long)]
+        exe: Option<PathBuf>,
+    },
     /// Compare a vault against a manifest. Non-zero if a single byte moved.
     Verify {
         #[arg(long)]
@@ -81,6 +98,9 @@ fn main() -> Result<()> {
         Command::BenchIndex { vault, runs } => bench_index(&vault, runs),
         Command::BenchQuery { vault } => bench_query(&vault),
         Command::HammerWrite { path } => hammer_write(&path),
+        Command::AuditAgents { vault, days, exe } => {
+            audit::audit_agents(&vault, days, exe.as_deref())
+        }
         Command::Verify { vault, manifest } => verify(&vault, &manifest),
     }
 }
@@ -112,13 +132,44 @@ impl Rng {
 }
 
 const WORDS: &[&str] = &[
-    "vault", "ledger", "canvas", "signal", "lattice", "anchor", "provenance", "index", "weave",
-    "bench", "proposal", "actor", "hash", "graph", "runtime", "topology", "budget", "cursor",
-    "gutter", "rail", "surface", "seam", "shell", "token", "fidelity", "embedding", "backlink",
+    "vault",
+    "ledger",
+    "canvas",
+    "signal",
+    "lattice",
+    "anchor",
+    "provenance",
+    "index",
+    "weave",
+    "bench",
+    "proposal",
+    "actor",
+    "hash",
+    "graph",
+    "runtime",
+    "topology",
+    "budget",
+    "cursor",
+    "gutter",
+    "rail",
+    "surface",
+    "seam",
+    "shell",
+    "token",
+    "fidelity",
+    "embedding",
+    "backlink",
 ];
 
-const FOLDERS: &[&str] =
-    &["Daily", "Projects", "Reference", "Archive", "Inbox", "Meetings", "Reading"];
+const FOLDERS: &[&str] = &[
+    "Daily",
+    "Projects",
+    "Reference",
+    "Archive",
+    "Inbox",
+    "Meetings",
+    "Reading",
+];
 
 // ── gen-vault ───────────────────────────────────────────────────────────────
 
@@ -134,8 +185,7 @@ fn default_fixture_dir() -> PathBuf {
 fn gen_vault(notes: usize, seed: u64, out: Option<PathBuf>) -> Result<()> {
     let root = out.unwrap_or_else(default_fixture_dir);
     if root.exists() {
-        std::fs::remove_dir_all(&root)
-            .with_context(|| format!("clearing {}", root.display()))?;
+        std::fs::remove_dir_all(&root).with_context(|| format!("clearing {}", root.display()))?;
     }
     std::fs::create_dir_all(&root)?;
     for f in FOLDERS {
@@ -151,9 +201,16 @@ fn gen_vault(notes: usize, seed: u64, out: Option<PathBuf>) -> Result<()> {
     }
 
     for (i, name) in names.iter().enumerate() {
-        let folder = if rng.chance(70) { *rng.pick(FOLDERS) } else { "" };
-        let rel =
-            if folder.is_empty() { format!("{name}.md") } else { format!("{folder}/{name}.md") };
+        let folder = if rng.chance(70) {
+            *rng.pick(FOLDERS)
+        } else {
+            ""
+        };
+        let rel = if folder.is_empty() {
+            format!("{name}.md")
+        } else {
+            format!("{folder}/{name}.md")
+        };
         let body = note_body(&mut rng, i, &names);
 
         // A realistic vault is not uniform. These proportions are what make the
@@ -190,7 +247,11 @@ fn note_body(rng: &mut Rng, i: usize, names: &[String]) -> String {
         s.push_str("---\n");
         s.push_str(&format!("zeta: {}\n", rng.below(1000)));
         s.push_str(&format!("title: {}\n", names[i]));
-        s.push_str(&format!("tags: [{}, {}]\n", rng.pick(WORDS), rng.pick(WORDS)));
+        s.push_str(&format!(
+            "tags: [{}, {}]\n",
+            rng.pick(WORDS),
+            rng.pick(WORDS)
+        ));
         s.push_str("alpha: 'quoted value'\n");
         s.push_str("---\n\n");
     }
@@ -236,7 +297,11 @@ fn note_body(rng: &mut Rng, i: usize, names: &[String]) -> String {
             // regexes the raw document instead of walking the AST fails here.
             s.push_str("```rust\n");
             s.push_str("// [[NotALink]] and #nottag must survive verbatim\n");
-            s.push_str(&format!("fn {}() -> usize {{ {} }}\n", rng.pick(WORDS), rng.below(100)));
+            s.push_str(&format!(
+                "fn {}() -> usize {{ {} }}\n",
+                rng.pick(WORDS),
+                rng.below(100)
+            ));
             s.push_str("```\n\n");
         }
         if rng.chance(10) {
@@ -247,7 +312,11 @@ fn note_body(rng: &mut Rng, i: usize, names: &[String]) -> String {
             s.push('\n');
         }
         if rng.chance(12) {
-            s.push_str(&format!("- [ ] {}\n- [x] {}\n\n", rng.pick(WORDS), rng.pick(WORDS)));
+            s.push_str(&format!(
+                "- [ ] {}\n- [x] {}\n\n",
+                rng.pick(WORDS),
+                rng.pick(WORDS)
+            ));
         }
         if rng.chance(8) {
             s.push_str(&format!("![[{}]]\n\n", names[rng.below(names.len())]));
@@ -266,7 +335,10 @@ fn write_hard_cases(root: &Path, names: &[String]) -> Result<()> {
     std::fs::write(edge.join("no-trailing-newline.md"), b"# no newline at end")?;
     std::fs::write(edge.join("crlf.md"), b"# CRLF\r\n\r\nbody\r\n")?;
     std::fs::write(edge.join("lf.md"), b"# LF\n\nbody\n")?;
-    std::fs::write(edge.join("mixed-endings.md"), b"# mixed\r\nsecond\nthird\r\n")?;
+    std::fs::write(
+        edge.join("mixed-endings.md"),
+        b"# mixed\r\nsecond\nthird\r\n",
+    )?;
     std::fs::write(edge.join("bom.md"), b"\xEF\xBB\xBF# BOM\n\nbody\n")?;
     std::fs::write(edge.join("only-frontmatter.md"), b"---\ntitle: x\n---\n")?;
     std::fs::write(
@@ -318,7 +390,10 @@ fn lint_tokens(dir: &Path) -> Result<()> {
     let token_file = dir.join("lib/tokens.css");
     let mut findings: Vec<String> = Vec::new();
 
-    for entry in walkdir::WalkDir::new(dir).into_iter().filter_map(Result::ok) {
+    for entry in walkdir::WalkDir::new(dir)
+        .into_iter()
+        .filter_map(Result::ok)
+    {
         let path = entry.path();
         if !path.is_file() {
             continue;
@@ -348,7 +423,10 @@ fn lint_tokens(dir: &Path) -> Result<()> {
         println!("lint-tokens: clean — every colour comes from lib/tokens.css");
         return Ok(());
     }
-    eprintln!("lint-tokens: {} colour literal(s) outside the token file:\n", findings.len());
+    eprintln!(
+        "lint-tokens: {} colour literal(s) outside the token file:\n",
+        findings.len()
+    );
     for f in &findings {
         eprintln!("  {f}");
     }
@@ -365,7 +443,10 @@ fn colour_literal(line: &str) -> Option<&str> {
             // 3, 4, 6 or 8 digits, and not part of a longer word.
             if matches!(hex.len(), 3 | 4 | 6 | 8) {
                 let after = rest[hex.len()..].chars().next();
-                if after.map(|c| !c.is_alphanumeric() && c != '_' && c != '-').unwrap_or(true) {
+                if after
+                    .map(|c| !c.is_alphanumeric() && c != '_' && c != '-')
+                    .unwrap_or(true)
+                {
                     return Some(line);
                 }
             }
@@ -382,8 +463,8 @@ fn colour_literal(line: &str) -> Option<&str> {
 // ── bench-index ─────────────────────────────────────────────────────────────
 
 fn bench_index(vault_path: &Path, runs: usize) -> Result<()> {
-    let vault = arc_labs_core::Vault::open(vault_path)
-        .map_err(|e| anyhow::anyhow!("{}", e.public()))?;
+    let vault =
+        arc_labs_core::Vault::open(vault_path).map_err(|e| anyhow::anyhow!("{}", e.public()))?;
 
     // A file on disk, not in memory: the gate is about what the app actually
     // does, and an in-memory database would flatter the result by skipping
@@ -401,13 +482,24 @@ fn bench_index(vault_path: &Path, runs: usize) -> Result<()> {
         let kind = if run == 1 { "cold " } else { "warm " };
         println!(
             "  {kind}run {run}: {:>6} ms  |  {} notes, {} canvases, {} links, {} tags, {} headings",
-            wall.as_millis(), stats.notes, stats.canvases, stats.links, stats.tags, stats.headings
+            wall.as_millis(),
+            stats.notes,
+            stats.canvases,
+            stats.links,
+            stats.tags,
+            stats.headings
         );
         if stats.skipped_unchanged > 0 {
-            println!("            {} unchanged notes skipped by hash", stats.skipped_unchanged);
+            println!(
+                "            {} unchanged notes skipped by hash",
+                stats.skipped_unchanged
+            );
         }
         if !stats.failed.is_empty() {
-            println!("            {} file(s) could not be indexed:", stats.failed.len());
+            println!(
+                "            {} file(s) could not be indexed:",
+                stats.failed.len()
+            );
             for (p, why) in stats.failed.iter().take(5) {
                 println!("              {p}: {why}");
             }
@@ -430,15 +522,18 @@ fn percentiles(mut v: Vec<f64>) -> (f64, f64, f64) {
 }
 
 fn bench_query(vault_path: &Path) -> Result<()> {
-    let vault = arc_labs_core::Vault::open(vault_path)
-        .map_err(|e| anyhow::anyhow!("{}", e.public()))?;
+    let vault =
+        arc_labs_core::Vault::open(vault_path).map_err(|e| anyhow::anyhow!("{}", e.public()))?;
     let tmp = std::env::temp_dir().join(format!("arc-q-{}.db", std::process::id()));
     let _ = std::fs::remove_file(&tmp);
 
     let mut conn = arc_labs_index::open(&tmp)?;
     let stats = arc_labs_index::build(&mut conn, &vault, false, |_| {})?;
-    println!("indexed {} notes, {} links, {} tags
-", stats.notes, stats.links, stats.tags);
+    println!(
+        "indexed {} notes, {} links, {} tags
+",
+        stats.notes, stats.links, stats.tags
+    );
 
     let s = arc_labs_index::query::stats(&conn)?;
     println!(
@@ -449,8 +544,16 @@ fn bench_query(vault_path: &Path) -> Result<()> {
     // Terms drawn from the generator's vocabulary, plus prefixes, so these are
     // queries that actually match rather than ones that return nothing fast.
     let queries = [
-        "ledger", "provenance", "canvas topology", "prov", "runtime budget",
-        "weave", "lattice anchor", "sig", "hash graph proposal", "z",
+        "ledger",
+        "provenance",
+        "canvas topology",
+        "prov",
+        "runtime budget",
+        "weave",
+        "lattice anchor",
+        "sig",
+        "hash graph proposal",
+        "z",
     ];
     let mut times = Vec::new();
     let mut total_hits = 0usize;
@@ -466,7 +569,8 @@ fn bench_query(vault_path: &Path) -> Result<()> {
     println!(
         "
   search      x{:<4}  p50 {p50:.2} ms  p95 {p95:.2} ms  p99 {p99:.2} ms   ({} hits)",
-        times.len(), total_hits
+        times.len(),
+        total_hits
     );
 
     // Backlinks for the most-linked notes: the worst case for that query.
@@ -493,8 +597,11 @@ fn bench_query(vault_path: &Path) -> Result<()> {
     }
     if !times.is_empty() {
         let (p50, p95, p99) = percentiles(times.clone());
-        println!("  backlinks   x{:<4}  p50 {p50:.2} ms  p95 {p95:.2} ms  p99 {p99:.2} ms   ({} rows)",
-                 times.len(), back_total);
+        println!(
+            "  backlinks   x{:<4}  p50 {p50:.2} ms  p95 {p95:.2} ms  p99 {p99:.2} ms   ({} rows)",
+            times.len(),
+            back_total
+        );
     }
 
     let mut times = Vec::new();
@@ -506,24 +613,35 @@ fn bench_query(vault_path: &Path) -> Result<()> {
         }
     }
     let (p50, p95, p99) = percentiles(times.clone());
-    println!("  quick-open  x{:<4}  p50 {p50:.2} ms  p95 {p95:.2} ms  p99 {p99:.2} ms", times.len());
+    println!(
+        "  quick-open  x{:<4}  p50 {p50:.2} ms  p95 {p95:.2} ms  p99 {p99:.2} ms",
+        times.len()
+    );
 
     let t0 = std::time::Instant::now();
     let g = arc_labs_index::query::graph(&conn)?;
     println!(
         "  graph            1  {:.1} ms   ({} nodes, {} edges)",
-        t0.elapsed().as_secs_f64() * 1000.0, g.nodes.len(), g.edges.len()
+        t0.elapsed().as_secs_f64() * 1000.0,
+        g.nodes.len(),
+        g.edges.len()
     );
 
     let t0 = std::time::Instant::now();
     let un = arc_labs_index::query::unresolved(&conn, 100)?;
-    println!("  unresolved       1  {:.1} ms   ({} distinct targets)",
-             t0.elapsed().as_secs_f64() * 1000.0, un.len());
+    println!(
+        "  unresolved       1  {:.1} ms   ({} distinct targets)",
+        t0.elapsed().as_secs_f64() * 1000.0,
+        un.len()
+    );
 
     let t0 = std::time::Instant::now();
     let tags = arc_labs_index::query::tag_counts(&conn)?;
-    println!("  tag browser      1  {:.1} ms   ({} tags)",
-             t0.elapsed().as_secs_f64() * 1000.0, tags.len());
+    println!(
+        "  tag browser      1  {:.1} ms   ({} tags)",
+        t0.elapsed().as_secs_f64() * 1000.0,
+        tags.len()
+    );
 
     let _ = std::fs::remove_file(&tmp);
     Ok(())
@@ -578,7 +696,10 @@ fn manifest_of(vault: &Path) -> Result<BTreeMap<String, String>> {
             .collect::<Vec<_>>()
             .join("/");
         let bytes = std::fs::read(entry.path())?;
-        out.insert(rel, format!("{}:{}", bytes.len(), blake3::hash(&bytes).to_hex()));
+        out.insert(
+            rel,
+            format!("{}:{}", bytes.len(), blake3::hash(&bytes).to_hex()),
+        );
     }
     Ok(out)
 }
@@ -587,7 +708,11 @@ fn write_manifest(vault: &Path, out: &Path) -> Result<()> {
     let m = manifest_of(vault)?;
     let n = m.len();
     std::fs::write(out, serde_json::to_string_pretty(&m)?)?;
-    println!("manifest: {n} files from {} -> {}", vault.display(), out.display());
+    println!(
+        "manifest: {n} files from {} -> {}",
+        vault.display(),
+        out.display()
+    );
     Ok(())
 }
 

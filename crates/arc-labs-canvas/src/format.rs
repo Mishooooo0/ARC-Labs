@@ -83,12 +83,7 @@ impl CanvasFormat {
         }
     }
 
-    pub fn render(
-        &self,
-        nodes: &[Node],
-        edges: &[Edge],
-        extra: &Map<String, Value>,
-    ) -> String {
+    pub fn render(&self, nodes: &[Node], edges: &[Edge], extra: &Map<String, Value>) -> String {
         // An object with nothing in it at all: `{}` and no newlines, which is
         // what a freshly created empty canvas looks like.
         if nodes.is_empty() && edges.is_empty() && extra.is_empty() {
@@ -107,8 +102,16 @@ impl CanvasFormat {
         // `nodes` and `edges` first, in that order, because that is where
         // Obsidian puts them and diff noise is the thing being avoided.
         for (field, count, body) in [
-            ("nodes", nodes.len(), render_array(nodes.iter().map(Node::as_map), &one, &two, self)),
-            ("edges", edges.len(), render_array(edges.iter().map(Edge::as_map), &one, &two, self)),
+            (
+                "nodes",
+                nodes.len(),
+                render_array(nodes.iter().map(Node::as_map), &one, &two, self),
+            ),
+            (
+                "edges",
+                edges.len(),
+                render_array(edges.iter().map(Edge::as_map), &one, &two, self),
+            ),
         ] {
             let _ = count;
             parts.push(format!("{one}\"{field}\":{body}"));
@@ -118,7 +121,10 @@ impl CanvasFormat {
             let rendered = if self.compact_elements {
                 serde_json::to_string(value).unwrap_or_else(|_| "null".into())
             } else {
-                indent_block(&serde_json::to_string_pretty(value).unwrap_or_else(|_| "null".into()), &one)
+                indent_block(
+                    &serde_json::to_string_pretty(value).unwrap_or_else(|_| "null".into()),
+                    &one,
+                )
             };
             parts.push(format!("{one}\"{key}\":{rendered}"));
         }
@@ -150,7 +156,10 @@ fn render_array<'a>(
         .map(|m| {
             let v = Value::Object(m.clone());
             if fmt.compact_elements {
-                format!("{two}{}", serde_json::to_string(&v).unwrap_or_else(|_| "{}".into()))
+                format!(
+                    "{two}{}",
+                    serde_json::to_string(&v).unwrap_or_else(|_| "{}".into())
+                )
             } else {
                 let pretty = serde_json::to_string_pretty(&v).unwrap_or_else(|_| "{}".into());
                 format!("{two}{}", indent_block(&pretty, two))
@@ -190,7 +199,8 @@ mod tests {
 
     #[test]
     fn detects_a_pretty_printed_canvas_written_by_something_else() {
-        let src = "{\n  \"nodes\": [\n    {\n      \"id\": \"a\"\n    }\n  ],\n  \"edges\": []\n}\n";
+        let src =
+            "{\n  \"nodes\": [\n    {\n      \"id\": \"a\"\n    }\n  ],\n  \"edges\": []\n}\n";
         let f = CanvasFormat::detect(src);
         assert_eq!(f.indent, Indent::Spaces(2));
         assert!(!f.compact_elements);

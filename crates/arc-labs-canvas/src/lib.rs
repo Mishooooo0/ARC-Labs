@@ -123,7 +123,12 @@ impl Node {
         self.0.get("id").and_then(Value::as_str).unwrap_or_default()
     }
     pub fn kind(&self) -> NodeKind {
-        NodeKind::from_str(self.0.get("type").and_then(Value::as_str).unwrap_or_default())
+        NodeKind::from_str(
+            self.0
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+        )
     }
     /// The ARC node type, if this is one of ours.
     pub fn arc_kind(&self) -> Option<ArcKind> {
@@ -223,10 +228,16 @@ impl Edge {
         self.0.get("id").and_then(Value::as_str).unwrap_or_default()
     }
     pub fn from_node(&self) -> &str {
-        self.0.get("fromNode").and_then(Value::as_str).unwrap_or_default()
+        self.0
+            .get("fromNode")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
     }
     pub fn to_node(&self) -> &str {
-        self.0.get("toNode").and_then(Value::as_str).unwrap_or_default()
+        self.0
+            .get("toNode")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
     }
     pub fn from_side(&self) -> Option<&str> {
         self.0.get("fromSide").and_then(Value::as_str)
@@ -383,7 +394,10 @@ mod tests {
 
         assert_eq!(first, ["id", "x", "y", "width", "height", "type", "file"]);
         assert_eq!(second, ["id", "type", "file", "x", "y", "width", "height"]);
-        assert_ne!(first, second, "the two nodes really do differ; that is the point");
+        assert_ne!(
+            first, second,
+            "the two nodes really do differ; that is the point"
+        );
     }
 
     #[test]
@@ -393,7 +407,10 @@ mod tests {
         assert_eq!(n.id(), "75a4f708ea95a139");
         assert_eq!(n.kind(), NodeKind::File);
         assert_eq!(n.file(), Some("Notes/Alpha.md"));
-        assert_eq!((n.x(), n.y(), n.width(), n.height()), (-105.0, -1503.0, 400.0, 400.0));
+        assert_eq!(
+            (n.x(), n.y(), n.width(), n.height()),
+            (-105.0, -1503.0, 400.0, 400.0)
+        );
 
         let e = &c.edges[0];
         assert_eq!(e.from_node(), "d9a077ef1fb364da");
@@ -403,7 +420,9 @@ mod tests {
     #[test]
     fn moving_a_node_keeps_key_order_and_integer_formatting() {
         let mut c = Canvas::parse(REAL).unwrap();
-        c.node_mut("75a4f708ea95a139").unwrap().set_position(40.0, -20.0);
+        c.node_mut("75a4f708ea95a139")
+            .unwrap()
+            .set_position(40.0, -20.0);
 
         let out = c.to_string();
         // The moved node keeps its unusual key order …
@@ -433,7 +452,11 @@ mod tests {
         let src = "{\n\t\"nodes\":[\n\t\t{\"id\":\"p1\",\"type\":\"text\",\"text\":\"Summarise {{note}}\",\"x\":0,\"y\":0,\"width\":300,\"height\":200,\"arc\":{\"kind\":\"prompt\",\"model\":\"qwen3.5:0.8b\"}}\n\t],\n\t\"edges\":[]\n}";
         let c = Canvas::parse(src).unwrap();
 
-        assert_eq!(c.nodes[0].kind(), NodeKind::Text, "must be a text node to Obsidian");
+        assert_eq!(
+            c.nodes[0].kind(),
+            NodeKind::Text,
+            "must be a text node to Obsidian"
+        );
         assert_eq!(c.nodes[0].arc_kind(), Some(ArcKind::Prompt));
         assert_eq!(c.to_string(), src);
     }
@@ -448,8 +471,14 @@ mod tests {
 
     #[test]
     fn malformed_input_is_an_error_not_a_panic() {
-        assert!(matches!(Canvas::parse("not json"), Err(CanvasError::Json(_))));
-        assert!(matches!(Canvas::parse("[1,2,3]"), Err(CanvasError::NotAnObject)));
+        assert!(matches!(
+            Canvas::parse("not json"),
+            Err(CanvasError::Json(_))
+        ));
+        assert!(matches!(
+            Canvas::parse("[1,2,3]"),
+            Err(CanvasError::NotAnObject)
+        ));
         assert!(matches!(
             Canvas::parse("{\"nodes\":\"nope\"}"),
             Err(CanvasError::NotAnArray { field: "nodes" })
@@ -482,15 +511,22 @@ mod real_fixtures {
             let Some(source) = fixture(name) else {
                 continue;
             };
-            let canvas = Canvas::parse(&source)
-                .unwrap_or_else(|e| panic!("{name} did not parse: {e}"));
+            let canvas =
+                Canvas::parse(&source).unwrap_or_else(|e| panic!("{name} did not parse: {e}"));
 
-            assert_eq!(canvas.to_string(), source, "{name} did not round-trip byte for byte");
+            assert_eq!(
+                canvas.to_string(),
+                source,
+                "{name} did not round-trip byte for byte"
+            );
             assert!(canvas.is_unchanged(), "{name} reported as changed");
             assert!(!canvas.nodes.is_empty(), "{name} parsed to no nodes");
             checked += 1;
         }
-        assert!(checked > 0, "the real canvas fixtures were not found; the gate did not run");
+        assert!(
+            checked > 0,
+            "the real canvas fixtures were not found; the gate did not run"
+        );
     }
 
     #[test]
@@ -508,9 +544,11 @@ mod real_fixtures {
         let after: Vec<&str> = out.lines().collect();
 
         assert_eq!(before.len(), after.len(), "line count changed");
-        let differing =
-            before.iter().zip(&after).filter(|(a, b)| a != b).count();
-        assert_eq!(differing, 1, "a one-node move should change exactly one line");
+        let differing = before.iter().zip(&after).filter(|(a, b)| a != b).count();
+        assert_eq!(
+            differing, 1,
+            "a one-node move should change exactly one line"
+        );
         assert!(out.contains("\"x\":1234,\"y\":-5678"));
     }
 
@@ -525,10 +563,27 @@ mod real_fixtures {
         assert_eq!(canvas.nodes.len(), 6);
         assert_eq!(canvas.edges.len(), 5);
         // Five file cards and one text card, per the file.
-        assert_eq!(canvas.nodes.iter().filter(|n| n.kind() == NodeKind::File).count(), 5);
-        assert_eq!(canvas.nodes.iter().filter(|n| n.kind() == NodeKind::Text).count(), 1);
+        assert_eq!(
+            canvas
+                .nodes
+                .iter()
+                .filter(|n| n.kind() == NodeKind::File)
+                .count(),
+            5
+        );
+        assert_eq!(
+            canvas
+                .nodes
+                .iter()
+                .filter(|n| n.kind() == NodeKind::Text)
+                .count(),
+            1
+        );
         // One of them points at another canvas — nesting is real and must not
         // be mistaken for a note.
-        assert!(canvas.nodes.iter().any(|n| n.file() == Some("ARC/Services.md")));
+        assert!(canvas
+            .nodes
+            .iter()
+            .any(|n| n.file() == Some("ARC/Services.md")));
     }
 }

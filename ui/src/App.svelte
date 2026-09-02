@@ -16,8 +16,8 @@
   import { transport } from "./lib/transport";
   import type {
     Backlink, GraphData, IndexStats, NoteRef, NoteView as Note, OutgoingLink,
-    CanvasRunnability, CanvasView, Proposal, RunStatus, SearchHit, Status, TagCount,
-    TimelineEntry, TreeView, UnresolvedLink,
+    CanvasRunnability, CanvasView, LinkSuggestion, Proposal, RunStatus, SearchHit, Status,
+    TagCount, TimelineEntry, TreeView, UnresolvedLink, WeaveStatus,
   } from "./lib/types";
   import { TransportError } from "./lib/types";
   import ArcMark from "./components/ArcMark.svelte";
@@ -30,6 +30,7 @@
   import FirstRun from "./components/FirstRun.svelte";
   import Graph from "./components/Graph.svelte";
   import Home from "./components/Home.svelte";
+  import Inbox from "./components/Inbox.svelte";
   import NoteViewer from "./components/NoteView.svelte";
   import Proposals from "./components/Proposals.svelte";
   import RunPanel from "./components/RunPanel.svelte";
@@ -39,7 +40,7 @@
   import Timeline from "./components/Timeline.svelte";
   import VaultStatus from "./components/VaultStatus.svelte";
 
-  type View = "home" | "note" | "search" | "graph";
+  type View = "home" | "note" | "search" | "graph" | "inbox";
 
   const THEMES = ["arc-dark", "arc-light", "arc-terminal"] as const;
 
@@ -66,6 +67,14 @@
   let contextLoading = $state(false);
   let graphData = $state<GraphData | null>(null);
   let graphLoading = $state(false);
+
+  // Weave. Inferred links live in their own state, never merged into
+  // `outgoing` or `backlinks` — those are observed, and the two must not be
+  // able to reach the same component by the same route.
+  let suggestions = $state<LinkSuggestion[]>([]);
+  let weave = $state<WeaveStatus | null>(null);
+  let weaveBusy = $state<number | null>(null);
+  let weaveWorking = $state(false);
 
   let searchQuery = $state("");
   let searchHits = $state<SearchHit[]>([]);
@@ -191,6 +200,8 @@
       tags = t;
       unresolvedLinks = u;
       if (status) status = { ...status, status: "online" };
+      // So the inbox count is right before anyone opens the inbox.
+      void loadInbox();
     } catch {
       if (status?.vault) status = { ...status, status: "indexing" };
       if (attempt < 40) setTimeout(() => void loadIndex(attempt + 1), 500);
@@ -378,6 +389,65 @@
     }
   }
 
+  async function openInbox() {
+    view = "inbox";
+    await loadInbox();
+  }
+
+  async function loadInbox() {
+    try {
+      // Both, always together: a suggestion list with no daemon state behind it
+      // cannot explain why it is empty, and "empty" is this pane's normal state.
+      [suggestions, weave] = await Promise.all([
+        transport.suggestions(50),
+        transport.weaveStatus(),
+      ]);
+    } catch {
+      // The index may not be up yet. The empty state says so; an error banner
+      // over a pane the user just opened would be noise.
+    }
+  }
+
+  async function acceptSuggestion(id: number) {
+    weaveBusy = id;
+    try {
+      await transport.acceptSuggestion(id);
+      await loadInbox();
+      // The link is real now, so anything showing observed links is stale.
+      if (selected) await loadContext(selected);
+      graphData = null;
+      if (selected && note) await openNote(selected);
+    } catch (e) {
+      error = message(e);
+    } finally {
+      weaveBusy = null;
+    }
+  }
+
+  async function dismissSuggestion(id: number) {
+    weaveBusy = id;
+    try {
+      await transport.dismissSuggestion(id);
+      await loadInbox();
+    } catch (e) {
+      error = message(e);
+    } finally {
+      weaveBusy = null;
+    }
+  }
+
+  async function weavePass() {
+    weaveWorking = true;
+    try {
+      await transport.weavePass();
+      await loadInbox();
+    } catch (e) {
+      error = message(e);
+    } finally {
+      weaveWorking = false;
+    }
+  }
+
   async function openGraph() {
     view = "graph";
     if (graphData || graphLoading) return;
@@ -430,6 +500,14 @@
     { id: "search", label: "Search vault", hint: "⌘⇧F", run: () => void openSearch() },
     { id: "graph", label: "Open graph", hint: "⌘⇧G", run: () => void openGraph() },
     {
+      id: "inbox",
+      label: suggestions.length
+        ? `Agent inbox (${suggestions.length} suggested)`
+        : "Agent inbox",
+      hint: "⌘⇧I",
+      run: () => void openInbox(),
+    },
+    {
       id: "edit",
       label: editing ? "Stop editing" : "Edit this note",
       hint: "⌘E",
@@ -477,6 +555,11 @@
     if (e.shiftKey && k === "g") {
       e.preventDefault();
       void openGraph();
+      return;
+    }
+    if (e.shiftKey && k === "i") {
+      e.preventDefault();
+      void openInbox();
       return;
     }
     if (e.shiftKey && k === "h") {
@@ -534,16 +617,21 @@
       <SaveStateBadge state={saveState} detail={saveDetail} />
 
       <nav class="views data">
-        {#each [["home", "home"], ["search", "search"], ["graph", "graph"]] as [id, label] (id)}
+        {#each [["home", "home"], ["search", "search"], ["graph", "graph"], ["inbox", "inbox"]] as [id, label] (id)}
           <button
             class:active={view === id}
             onclick={() => {
               if (id === "search") void openSearch();
               else if (id === "graph") void openGraph();
+              else if (id === "inbox") void openInbox();
               else view = "home";
             }}
           >
             {label}
+            {#if id === "inbox" && suggestions.length}
+              <!-- Blue, because what is waiting there came from an agent. -->
+              <span class="count">{suggestions.length}</span>
+            {/if}
           </button>
         {/each}
       </nav>
@@ -605,9 +693,20 @@
               searchHits = [];
             }}
           />
+        {:else if view === "inbox"}
+          <Inbox
+            {suggestions}
+            status={weave}
+            busy={weaveBusy}
+            working={weaveWorking}
+            onaccept={(id) => void acceptSuggestion(id)}
+            ondismiss={(id) => void dismissSuggestion(id)}
+            onopen={openNote}
+            onpass={() => void weavePass()}
+          />
         {:else if view === "graph"}
           {#if graphData}
-            <Graph data={graphData} {selected} onopen={openNote} />
+            <Graph data={graphData} {selected} inferred={suggestions} onopen={openNote} />
           {:else}
             <EmptyState
               title={graphLoading ? "Laying out the graph" : "Graph"}
@@ -795,6 +894,17 @@
   .views button.active {
     background: var(--arc-bg-3);
     color: var(--arc-fg);
+  }
+  /* Blue, because what is waiting in there came from an agent. The same rule as
+     the timeline rail and the inbox cards: amber is what a person did. */
+  .views .count {
+    display: inline-block;
+    margin-left: var(--arc-space-1);
+    padding: 0 4px;
+    border-radius: var(--arc-radius-sm);
+    background: var(--arc-agent-wash);
+    color: var(--arc-agent);
+    font-size: var(--arc-text-xs);
   }
 
   .chip {

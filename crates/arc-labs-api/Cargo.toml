@@ -20,6 +20,7 @@ arc-labs-index.workspace = true
 arc-labs-ledger.workspace = true
 arc-labs-canvas.workspace = true
 arc-labs-runtime.workspace = true
+arc-labs-weave.workspace = true
 
 [dev-dependencies]
 tempfile = "3.27.0"

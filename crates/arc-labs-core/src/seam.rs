@@ -89,7 +89,11 @@ impl MockLlm {
     /// The transform, exposed so tests can state the expected output without
     /// duplicating the rule.
     pub fn response_for(prompt: &str) -> String {
-        format!("[mock:{}] {}", &blake3::hash(prompt.as_bytes()).to_hex()[..8], prompt.trim())
+        format!(
+            "[mock:{}] {}",
+            &blake3::hash(prompt.as_bytes()).to_hex()[..8],
+            prompt.trim()
+        )
     }
 }
 

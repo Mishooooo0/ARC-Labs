@@ -22,3 +22,5 @@ tokio              = { workspace = true }
 tracing            = { workspace = true }
 tracing-subscriber = { workspace = true }
 arc-labs-index.workspace = true
+arc-labs-mcp.workspace = true
+arc-labs-weave.workspace = true

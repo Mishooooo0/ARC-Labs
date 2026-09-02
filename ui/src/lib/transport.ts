@@ -18,8 +18,9 @@
 
 import type {
   Backlink, CanvasRunnability, CanvasView, DirListing, EntryDiff, GraphData, IndexStats,
-  NodeGeometry, NoteRef, NoteView, OutgoingLink, Proposal, RunStatus, SaveResult, SearchHit,
-  Status, TagCount, TimelineEntry, TreeView, UnresolvedLink, VaultInfo,
+  LinkSuggestion, NodeGeometry, NoteRef, NoteView, OutgoingLink, PassReport, Proposal, RunStatus,
+  SaveResult, SearchHit, Status, TagCount, TimelineEntry, TreeView, UnresolvedLink, VaultInfo,
+  WeaveStatus,
 } from "./types";
 import { TransportError } from "./types";
 
@@ -67,6 +68,23 @@ export interface Transport {
   tagNotes(tag: string): Promise<NoteRef[]>;
   graph(): Promise<GraphData>;
   indexStats(): Promise<IndexStats>;
+
+  // ── Weave (Phase 6) ───────────────────────────────────────────────────────
+  /** Inferred links awaiting a person. Never mixed with `outgoing`. */
+  suggestions(limit?: number): Promise<LinkSuggestion[]>;
+  /** Write the link into the source note. Two ledger entries: proposed, accepted. */
+  acceptSuggestion(id: number): Promise<SaveResult>;
+  dismissSuggestion(id: number): Promise<void>;
+  weaveStatus(): Promise<WeaveStatus>;
+  /** Run one bounded pass now. */
+  weavePass(): Promise<PassReport>;
+  /**
+   * Tell the backend the user is typing, so Weave stands down.
+   *
+   * Fire-and-forget: nothing waits on it, and a failure is silent, because a
+   * keystroke must never be delayed by bookkeeping about a background task.
+   */
+  userActive(): void;
 
   browse(path?: string): Promise<DirListing>;
   openVault(path: string): Promise<VaultInfo>;
@@ -253,6 +271,34 @@ class ServerTransport implements Transport {
     return this.#call<IndexStats>("index-stats");
   }
 
+  suggestions(limit = 50) {
+    return this.#call<LinkSuggestion[]>(`suggestions?limit=${limit}`);
+  }
+  acceptSuggestion(id: number) {
+    return this.#call<SaveResult>("suggestion/accept", {
+      method: "POST",
+      body: JSON.stringify({ id }),
+    });
+  }
+  dismissSuggestion(id: number) {
+    return this.#call<void>("suggestion/dismiss", {
+      method: "POST",
+      body: JSON.stringify({ id }),
+    });
+  }
+  weaveStatus() {
+    return this.#call<WeaveStatus>("weave/status");
+  }
+  weavePass() {
+    return this.#call<PassReport>("weave/pass", { method: "POST" });
+  }
+  userActive() {
+    // Not sent. A fetch per keystroke would cost more than the daemon it is
+    // trying to quiet — and the server owns the daemon, so it can see its own
+    // save traffic. The desktop shell, where the call is one IPC hop and Weave
+    // runs in-process, does send it.
+  }
+
   browse(path?: string) {
     const q = path ? `?path=${encodeURIComponent(path)}` : "";
     return this.#call<DirListing>(`browse${q}`);
@@ -371,6 +417,27 @@ class DesktopTransport implements Transport {
   }
   indexStats() {
     return this.#invoke<IndexStats>("index_stats");
+  }
+
+  suggestions(limit = 50) {
+    return this.#invoke<LinkSuggestion[]>("suggestions", { limit });
+  }
+  acceptSuggestion(id: number) {
+    return this.#invoke<SaveResult>("accept_suggestion", { id });
+  }
+  dismissSuggestion(id: number) {
+    return this.#invoke<void>("dismiss_suggestion", { id });
+  }
+  weaveStatus() {
+    return this.#invoke<WeaveStatus>("weave_status");
+  }
+  weavePass() {
+    return this.#invoke<PassReport>("weave_pass");
+  }
+  userActive() {
+    // Deliberately not awaited and deliberately swallowing errors: this runs on
+    // the keystroke path, where the only acceptable cost is the one IPC hop.
+    void this.#invoke<void>("user_active").catch(() => {});
   }
 
   browse(path?: string) {

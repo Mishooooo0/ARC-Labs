@@ -62,7 +62,10 @@ pub enum LedgerError {
 
 impl LedgerError {
     fn io(path: impl Into<PathBuf>, source: std::io::Error) -> Self {
-        LedgerError::Io { path: path.into(), source }
+        LedgerError::Io {
+            path: path.into(),
+            source,
+        }
     }
 
     /// A message safe to send to a caller that may be remote. Same rule as the
@@ -98,7 +101,10 @@ impl Ledger {
         let arc = vault_root.join(".arc");
         let dir = arc.join("ledger");
         std::fs::create_dir_all(&dir).map_err(|e| LedgerError::io(&dir, e))?;
-        Ok(Ledger { dir, objects: ObjectStore::new(&arc) })
+        Ok(Ledger {
+            dir,
+            objects: ObjectStore::new(&arc),
+        })
     }
 
     pub fn objects(&self) -> &ObjectStore {
@@ -156,7 +162,9 @@ impl Ledger {
             .append(true)
             .open(&file)
             .map_err(|e| LedgerError::io(&file, e))?;
-        handle.write_all(line.as_bytes()).map_err(|e| LedgerError::io(&file, e))?;
+        handle
+            .write_all(line.as_bytes())
+            .map_err(|e| LedgerError::io(&file, e))?;
         // Durable before the caller is told it happened. The ledger is the thing
         // that makes agent activity auditable; an entry that is "probably on
         // disk" is not an audit trail.
@@ -268,9 +276,10 @@ impl Ledger {
     /// approximately right.
     pub fn content_at(&self, path: &VaultPath, index: usize) -> Result<String> {
         let entries = self.read(path)?;
-        let entry = entries
-            .get(index)
-            .ok_or(LedgerError::NoSuchEntry { index, len: entries.len() })?;
+        let entry = entries.get(index).ok_or(LedgerError::NoSuchEntry {
+            index,
+            len: entries.len(),
+        })?;
 
         // `reject` records what was refused, not a state the note was ever in;
         // restoring "to" one means restoring to the state before it.
@@ -280,7 +289,10 @@ impl Ledger {
                 .rev()
                 .find_map(|e| e.after.clone())
                 .ok_or(LedgerError::NothingToRestore { index })?,
-            _ => entry.after.clone().ok_or(LedgerError::NothingToRestore { index })?,
+            _ => entry
+                .after
+                .clone()
+                .ok_or(LedgerError::NothingToRestore { index })?,
         };
         self.objects.get(&hash)
     }
@@ -312,7 +324,9 @@ impl Ledger {
                     .append(true)
                     .open(&new)
                     .map_err(|e| LedgerError::io(&new, e))?;
-                handle.write_all(&existing).map_err(|e| LedgerError::io(&new, e))?;
+                handle
+                    .write_all(&existing)
+                    .map_err(|e| LedgerError::io(&new, e))?;
                 handle.sync_all().map_err(|e| LedgerError::io(&new, e))?;
                 std::fs::remove_file(&old).map_err(|e| LedgerError::io(&old, e))?;
             } else {
@@ -368,10 +382,24 @@ mod tests {
     #[test]
     fn entries_append_and_read_back_in_order() {
         let (_t, l, p) = ledger();
-        l.record_change(&p, Actor::human("mishal"), Op::Create, "new note", None, Some("v1"))
-            .unwrap();
-        l.record_change(&p, Actor::human("mishal"), Op::Edit, "manual edit", Some("v1"), Some("v2"))
-            .unwrap();
+        l.record_change(
+            &p,
+            Actor::human("mishal"),
+            Op::Create,
+            "new note",
+            None,
+            Some("v1"),
+        )
+        .unwrap();
+        l.record_change(
+            &p,
+            Actor::human("mishal"),
+            Op::Edit,
+            "manual edit",
+            Some("v1"),
+            Some("v2"),
+        )
+        .unwrap();
 
         let entries = l.read(&p).unwrap();
         assert_eq!(entries.len(), 2);
@@ -389,8 +417,15 @@ mod tests {
 
         let mut content = String::from("# Note\n\nline 0\n");
         let mut states = vec![content.clone()];
-        l.record_change(&p, Actor::human("mishal"), Op::Create, "new note", None, Some(&content))
-            .unwrap();
+        l.record_change(
+            &p,
+            Actor::human("mishal"),
+            Op::Create,
+            "new note",
+            None,
+            Some(&content),
+        )
+        .unwrap();
 
         for i in 1..50 {
             let before = content.clone();
@@ -407,7 +442,8 @@ mod tests {
             } else {
                 (Actor::human("mishal"), Op::Edit, "manual edit".to_string())
             };
-            l.record_change(&p, actor, op, reason, Some(&before), Some(&content)).unwrap();
+            l.record_change(&p, actor, op, reason, Some(&before), Some(&content))
+                .unwrap();
             states.push(content.clone());
         }
 
@@ -419,7 +455,11 @@ mod tests {
 
         // And every other point, because "any prior state" is the actual claim.
         for (i, expected) in states.iter().enumerate() {
-            assert_eq!(&l.content_at(&p, i).unwrap(), expected, "state {i} did not restore");
+            assert_eq!(
+                &l.content_at(&p, i).unwrap(),
+                expected,
+                "state {i} did not restore"
+            );
         }
 
         // Both actors are present and distinguishable — constraint 6 has
@@ -456,7 +496,11 @@ mod tests {
         let after_meta = std::fs::metadata(&note).unwrap();
         assert_eq!(after_meta.modified().unwrap(), before_mtime, "mtime moved");
         assert_eq!(after_meta.len(), before_meta.len());
-        assert_eq!(std::fs::read(&note).unwrap(), b"# Original\n", "the file changed");
+        assert_eq!(
+            std::fs::read(&note).unwrap(),
+            b"# Original\n",
+            "the file changed"
+        );
 
         // The proposal is recorded, and its content is retrievable for review.
         let entries = l.read(&p).unwrap();
@@ -471,7 +515,8 @@ mod tests {
     #[test]
     fn a_rejected_proposal_is_kept_as_history() {
         let (_t, l, p) = ledger();
-        l.record_change(&p, Actor::human("m"), Op::Create, "new", None, Some("v1")).unwrap();
+        l.record_change(&p, Actor::human("m"), Op::Create, "new", None, Some("v1"))
+            .unwrap();
         l.record_reject(
             &p,
             Actor::agent("weave", "m", "s"),
@@ -492,11 +537,27 @@ mod tests {
         let from = VaultPath::new("old-name.md").unwrap();
         let to = VaultPath::new("Archive/new-name.md").unwrap();
 
-        l.record_change(&from, Actor::human("m"), Op::Create, "new", None, Some("v1")).unwrap();
-        l.record_change(&from, Actor::human("m"), Op::Edit, "edit", Some("v1"), Some("v2"))
-            .unwrap();
+        l.record_change(
+            &from,
+            Actor::human("m"),
+            Op::Create,
+            "new",
+            None,
+            Some("v1"),
+        )
+        .unwrap();
+        l.record_change(
+            &from,
+            Actor::human("m"),
+            Op::Edit,
+            "edit",
+            Some("v1"),
+            Some("v2"),
+        )
+        .unwrap();
 
-        l.record_rename(&from, &to, Actor::human("m"), "v2").unwrap();
+        l.record_rename(&from, &to, Actor::human("m"), "v2")
+            .unwrap();
 
         // The old path has nothing left; the new path has everything.
         assert!(l.read(&from).unwrap().is_empty());
@@ -516,8 +577,10 @@ mod tests {
         let a = VaultPath::new("a.md").unwrap();
         let b = VaultPath::new("b.md").unwrap();
 
-        l.record_change(&a, Actor::human("m"), Op::Create, "a", None, Some("a1")).unwrap();
-        l.record_change(&b, Actor::human("m"), Op::Create, "b", None, Some("b1")).unwrap();
+        l.record_change(&a, Actor::human("m"), Op::Create, "a", None, Some("a1"))
+            .unwrap();
+        l.record_change(&b, Actor::human("m"), Op::Create, "b", None, Some("b1"))
+            .unwrap();
 
         l.record_rename(&a, &b, Actor::human("m"), "a1").unwrap();
 
@@ -530,8 +593,15 @@ mod tests {
     fn a_truncated_last_line_costs_one_entry_not_the_file() {
         let (_t, l, p) = ledger();
         for i in 0..3 {
-            l.record_change(&p, Actor::human("m"), Op::Edit, "e", None, Some(&format!("v{i}")))
-                .unwrap();
+            l.record_change(
+                &p,
+                Actor::human("m"),
+                Op::Edit,
+                "e",
+                None,
+                Some(&format!("v{i}")),
+            )
+            .unwrap();
         }
 
         // Simulate a crash mid-append.
@@ -541,7 +611,11 @@ mod tests {
         std::fs::write(&file, raw).unwrap();
 
         let entries = l.read(&p).unwrap();
-        assert_eq!(entries.len(), 3, "the complete entries should still be readable");
+        assert_eq!(
+            entries.len(),
+            3,
+            "the complete entries should still be readable"
+        );
     }
 
     #[test]
@@ -558,7 +632,10 @@ mod tests {
         let e = &l.read(&p).unwrap()[0];
         assert_eq!(e.op, Op::Egress);
         assert!(!e.op.touches_file());
-        assert_eq!(e.destination.as_deref(), Some("http://workstation.local:11434"));
+        assert_eq!(
+            e.destination.as_deref(),
+            Some("http://workstation.local:11434")
+        );
         assert_eq!(e.bytes, Some(4096));
     }
 
@@ -566,9 +643,15 @@ mod tests {
     fn a_note_name_that_is_not_a_legal_filename_still_gets_a_ledger() {
         // Keyed on a hash of the path, so folders, spaces and unicode are fine.
         let (_t, l, _) = ledger();
-        for name in ["Daily/2026-09-02.md", "with space.md", "unicode-café.md", "a/b/c/deep.md"] {
+        for name in [
+            "Daily/2026-09-02.md",
+            "with space.md",
+            "unicode-café.md",
+            "a/b/c/deep.md",
+        ] {
             let p = VaultPath::new(name).unwrap();
-            l.record_change(&p, Actor::human("m"), Op::Create, "new", None, Some("v")).unwrap();
+            l.record_change(&p, Actor::human("m"), Op::Create, "new", None, Some("v"))
+                .unwrap();
             assert_eq!(l.read(&p).unwrap().len(), 1, "failed for {name}");
         }
     }
@@ -576,7 +659,8 @@ mod tests {
     #[test]
     fn restoring_a_missing_index_says_so() {
         let (_t, l, p) = ledger();
-        l.record_change(&p, Actor::human("m"), Op::Create, "new", None, Some("v1")).unwrap();
+        l.record_change(&p, Actor::human("m"), Op::Create, "new", None, Some("v1"))
+            .unwrap();
         assert!(matches!(
             l.content_at(&p, 9),
             Err(LedgerError::NoSuchEntry { index: 9, len: 1 })

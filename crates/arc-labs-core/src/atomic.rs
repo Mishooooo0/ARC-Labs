@@ -38,7 +38,10 @@ pub fn replace(target: &Path, bytes: &[u8]) -> Result<()> {
     let temp_name = format!(
         "{TEMP_PREFIX}{}-{}.tmp",
         std::process::id(),
-        target.file_name().and_then(|n| n.to_str()).unwrap_or("note")
+        target
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("note")
     );
     let temp = dir.join(temp_name);
 
@@ -94,7 +97,9 @@ const TEMP_PREFIX: &str = ".arc-write-";
 /// Called on vault open. Only files older than a minute are removed, so a sweep
 /// can never delete a write another process is in the middle of.
 pub fn sweep_temp_files(dir: &Path) -> usize {
-    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
     let now = std::time::SystemTime::now();
     let mut removed = 0;
 
@@ -107,7 +112,11 @@ pub fn sweep_temp_files(dir: &Path) -> usize {
         let stale = entry
             .metadata()
             .and_then(|m| m.modified())
-            .map(|t| now.duration_since(t).map(|d| d.as_secs() > 60).unwrap_or(false))
+            .map(|t| {
+                now.duration_since(t)
+                    .map(|d| d.as_secs() > 60)
+                    .unwrap_or(false)
+            })
             .unwrap_or(false);
         if stale && std::fs::remove_file(entry.path()).is_ok() {
             removed += 1;
@@ -150,7 +159,11 @@ mod tests {
             "unicode caf\u{e9} \u{2615}".as_bytes(),
         ] {
             replace(&f, content).unwrap();
-            assert_eq!(std::fs::read(&f).unwrap(), content, "bytes changed for {content:?}");
+            assert_eq!(
+                std::fs::read(&f).unwrap(),
+                content,
+                "bytes changed for {content:?}"
+            );
         }
     }
 
@@ -184,7 +197,10 @@ mod tests {
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .filter(|n| n.contains("arc-write"))
             .collect();
-        assert!(strays.is_empty(), "left temp files after failure: {strays:?}");
+        assert!(
+            strays.is_empty(),
+            "left temp files after failure: {strays:?}"
+        );
     }
 
     #[test]
@@ -217,7 +233,9 @@ mod tests {
         // the predicate by removing the file and recreating it is not an option
         // either. Use a File handle and set_times, stable since Rust 1.75.
         let f = std::fs::File::options().write(true).open(path).unwrap();
-        let times = std::fs::FileTimes::new().set_modified(when).set_accessed(when);
+        let times = std::fs::FileTimes::new()
+            .set_modified(when)
+            .set_accessed(when);
         f.set_times(times).unwrap();
     }
 
@@ -257,6 +275,10 @@ mod tests {
         }
         stop.store(true, Ordering::Relaxed);
 
-        assert_eq!(reader.join().unwrap(), 0, "observed a partially written file");
+        assert_eq!(
+            reader.join().unwrap(),
+            0,
+            "observed a partially written file"
+        );
     }
 }

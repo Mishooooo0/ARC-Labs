@@ -39,7 +39,10 @@ pub enum ErrorCode {
 
 impl ApiError {
     pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
-        ApiError { code, message: message.into() }
+        ApiError {
+            code,
+            message: message.into(),
+        }
     }
 
     pub fn no_vault() -> Self {
@@ -47,7 +50,10 @@ impl ApiError {
     }
 
     pub fn not_permitted(what: &str) -> Self {
-        ApiError::new(ErrorCode::NotPermitted, format!("{what} is not available in this mode"))
+        ApiError::new(
+            ErrorCode::NotPermitted,
+            format!("{what} is not available in this mode"),
+        )
     }
 
     pub fn conflict() -> Self {

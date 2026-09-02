@@ -40,13 +40,28 @@ pub struct Check {
 
 impl Check {
     fn ok(name: &str, detail: impl Into<String>) -> Check {
-        Check { name: name.into(), level: Level::Ok, detail: detail.into(), fix: None }
+        Check {
+            name: name.into(),
+            level: Level::Ok,
+            detail: detail.into(),
+            fix: None,
+        }
     }
     fn warn(name: &str, detail: impl Into<String>, fix: Option<String>) -> Check {
-        Check { name: name.into(), level: Level::Warn, detail: detail.into(), fix }
+        Check {
+            name: name.into(),
+            level: Level::Warn,
+            detail: detail.into(),
+            fix,
+        }
     }
     fn fail(name: &str, detail: impl Into<String>, fix: Option<String>) -> Check {
-        Check { name: name.into(), level: Level::Fail, detail: detail.into(), fix }
+        Check {
+            name: name.into(),
+            level: Level::Fail,
+            detail: detail.into(),
+            fix,
+        }
     }
 }
 
@@ -58,7 +73,11 @@ pub struct Report {
 
 impl Report {
     pub fn worst(&self) -> Level {
-        self.checks.iter().map(|c| c.level).max().unwrap_or(Level::Ok)
+        self.checks
+            .iter()
+            .map(|c| c.level)
+            .max()
+            .unwrap_or(Level::Ok)
     }
 
     /// Non-zero exit when something is actually broken. A `Warn` is not a
@@ -76,11 +95,19 @@ impl Report {
         let mut out = String::new();
         let _ = writeln!(out, "ARC-LABS doctor");
         let _ = writeln!(out, "  platform        {}", self.platform.describe());
-        let _ = writeln!(out, "  package manager {}", self.platform.package_manager.as_str());
+        let _ = writeln!(
+            out,
+            "  package manager {}",
+            self.platform.package_manager.as_str()
+        );
         let _ = writeln!(
             out,
             "  desktop shell   {}",
-            if self.platform.supports_desktop_shell() { "supported" } else { "not available" }
+            if self.platform.supports_desktop_shell() {
+                "supported"
+            } else {
+                "not available"
+            }
         );
         let _ = writeln!(out);
 
@@ -95,8 +122,14 @@ impl Report {
         let _ = writeln!(out);
         let _ = match self.worst() {
             Level::Ok => writeln!(out, "  Everything checks out."),
-            Level::Warn => writeln!(out, "  Usable now; the warnings above matter for later phases."),
-            Level::Fail => writeln!(out, "  Something above must be fixed before ARC-LABS will run."),
+            Level::Warn => writeln!(
+                out,
+                "  Usable now; the warnings above matter for later phases."
+            ),
+            Level::Fail => writeln!(
+                out,
+                "  Something above must be fixed before ARC-LABS will run."
+            ),
         };
         out
     }
@@ -121,10 +154,9 @@ fn check_webview(p: &Platform) -> Check {
             // The runtime ships with Windows 11 and current Edge, so this is
             // usually already true; when it is not, the app opens a blank window
             // and gives no clue why. Hence the explicit check.
-            let installed = std::path::Path::new(
-                r"C:\Program Files (x86)\Microsoft\EdgeWebView\Application",
-            )
-            .exists();
+            let installed =
+                std::path::Path::new(r"C:\Program Files (x86)\Microsoft\EdgeWebView\Application")
+                    .exists();
             if installed {
                 Check::ok("webview2", "installed")
             } else {
@@ -139,18 +171,22 @@ fn check_webview(p: &Platform) -> Check {
             if !p.supports_desktop_shell() {
                 return Check::ok("webview", "not needed — use `arc-labs serve` and a browser");
             }
-            let found = ["/usr/lib/x86_64-linux-gnu", "/usr/lib64", "/usr/lib"].iter().any(|dir| {
-                std::fs::read_dir(dir)
-                    .map(|mut d| {
-                        d.any(|e| {
-                            e.map(|e| {
-                                e.file_name().to_string_lossy().starts_with("libwebkit2gtk-4.1")
+            let found = ["/usr/lib/x86_64-linux-gnu", "/usr/lib64", "/usr/lib"]
+                .iter()
+                .any(|dir| {
+                    std::fs::read_dir(dir)
+                        .map(|mut d| {
+                            d.any(|e| {
+                                e.map(|e| {
+                                    e.file_name()
+                                        .to_string_lossy()
+                                        .starts_with("libwebkit2gtk-4.1")
+                                })
+                                .unwrap_or(false)
                             })
-                            .unwrap_or(false)
                         })
-                    })
-                    .unwrap_or(false)
-            });
+                        .unwrap_or(false)
+                });
             if found {
                 Check::ok("webkit2gtk", "found")
             } else {
@@ -216,18 +252,29 @@ fn probe_tcp(endpoint: &str, timeout: Duration) -> Result<(), String> {
         .next()
         .ok_or_else(|| "no address".to_string())?;
 
-    TcpStream::connect_timeout(&addr, timeout).map(|_| ()).map_err(|e| e.kind().to_string())
+    TcpStream::connect_timeout(&addr, timeout)
+        .map(|_| ())
+        .map_err(|e| e.kind().to_string())
 }
 
 fn check_vault(vault: Option<&std::path::Path>) -> Check {
     let Some(v) = vault else {
-        return Check::warn("vault", "none configured", Some("arc-labs --vault <path>".into()));
+        return Check::warn(
+            "vault",
+            "none configured",
+            Some("arc-labs --vault <path>".into()),
+        );
     };
     match arc_labs_core::Vault::open(v) {
         Ok(vault) => match vault.tree() {
             Ok(t) => Check::ok(
                 "vault",
-                format!("{} — {} notes, {} canvases", vault.name(), t.note_count, t.canvas_count),
+                format!(
+                    "{} — {} notes, {} canvases",
+                    vault.name(),
+                    t.note_count,
+                    t.canvas_count
+                ),
             ),
             Err(e) => Check::fail("vault", format!("cannot scan: {}", e.public()), None),
         },
@@ -238,7 +285,10 @@ fn check_vault(vault: Option<&std::path::Path>) -> Check {
 /// The packages `setup` would install here, if any.
 pub fn missing_packages(report: &Report) -> Vec<&'static str> {
     let failing = |name: &str| {
-        report.checks.iter().any(|c| c.name == name && c.level != Level::Ok)
+        report
+            .checks
+            .iter()
+            .any(|c| c.name == name && c.level != Level::Ok)
     };
     let mut pkgs = Vec::new();
     match report.platform.package_manager {
@@ -260,7 +310,12 @@ pub fn missing_packages(report: &Report) -> Vec<&'static str> {
         }
         PackageManager::Dnf => {
             if failing("webkit2gtk") {
-                pkgs.extend(["webkit2gtk4.1-devel", "libappindicator-gtk3-devel", "librsvg2-devel", "openssl-devel"]);
+                pkgs.extend([
+                    "webkit2gtk4.1-devel",
+                    "libappindicator-gtk3-devel",
+                    "librsvg2-devel",
+                    "openssl-devel",
+                ]);
             }
             if failing("node") || failing("npm") {
                 pkgs.push("nodejs");
@@ -268,7 +323,12 @@ pub fn missing_packages(report: &Report) -> Vec<&'static str> {
         }
         PackageManager::Pacman => {
             if failing("webkit2gtk") {
-                pkgs.extend(["webkit2gtk-4.1", "libappindicator-gtk3", "librsvg", "openssl"]);
+                pkgs.extend([
+                    "webkit2gtk-4.1",
+                    "libappindicator-gtk3",
+                    "librsvg",
+                    "openssl",
+                ]);
             }
             if failing("node") || failing("npm") {
                 pkgs.push("nodejs");
@@ -304,14 +364,21 @@ mod tests {
 
         for c in &report.checks {
             if c.level != Level::Ok {
-                assert!(c.fix.is_some(), "check '{}' fails with no fix offered", c.name);
+                assert!(
+                    c.fix.is_some(),
+                    "check '{}' fails with no fix offered",
+                    c.name
+                );
             }
         }
     }
 
     #[test]
     fn warnings_do_not_fail_the_exit_code_but_failures_do() {
-        let mut r = Report { platform: Platform::detect(), checks: vec![Check::ok("a", "fine")] };
+        let mut r = Report {
+            platform: Platform::detect(),
+            checks: vec![Check::ok("a", "fine")],
+        };
         assert_eq!(r.exit_code(), 0);
 
         r.checks.push(Check::warn("b", "later", Some("x".into())));
@@ -332,9 +399,17 @@ mod tests {
     #[test]
     fn endpoint_parsing_tolerates_the_shapes_people_actually_write() {
         // Each should resolve to an address; connecting is expected to fail.
-        for e in ["http://127.0.0.1:1", "127.0.0.1:1", "http://127.0.0.1:1/", "https://127.0.0.1:1"] {
+        for e in [
+            "http://127.0.0.1:1",
+            "127.0.0.1:1",
+            "http://127.0.0.1:1/",
+            "https://127.0.0.1:1",
+        ] {
             let err = probe_tcp(e, Duration::from_millis(200)).unwrap_err();
-            assert!(!err.contains("cannot resolve"), "failed to parse {e}: {err}");
+            assert!(
+                !err.contains("cannot resolve"),
+                "failed to parse {e}: {err}"
+            );
         }
     }
 
@@ -354,6 +429,10 @@ mod tests {
     fn a_missing_vault_fails_without_echoing_the_path() {
         let c = check_vault(Some(std::path::Path::new("/no/such/vault/here")));
         assert_eq!(c.level, Level::Fail);
-        assert!(!c.detail.contains("no/such"), "leaked the path: {}", c.detail);
+        assert!(
+            !c.detail.contains("no/such"),
+            "leaked the path: {}",
+            c.detail
+        );
     }
 }

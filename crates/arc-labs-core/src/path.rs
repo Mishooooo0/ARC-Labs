@@ -72,15 +72,24 @@ impl VaultPath {
                 _ => {}
             }
             if raw.trim().is_empty() {
-                return Err(Error::invalid(input, "path has a whitespace-only component"));
+                return Err(Error::invalid(
+                    input,
+                    "path has a whitespace-only component",
+                ));
             }
             // Windows strips these silently, so `note ` and `note` name the same
             // file there and different files on Linux.
             if raw.ends_with(' ') || raw.ends_with('.') {
-                return Err(Error::invalid(input, "component ends with a space or a dot"));
+                return Err(Error::invalid(
+                    input,
+                    "component ends with a space or a dot",
+                ));
             }
             let stem = raw.split('.').next().unwrap_or(raw);
-            if WINDOWS_RESERVED.iter().any(|r| stem.eq_ignore_ascii_case(r)) {
+            if WINDOWS_RESERVED
+                .iter()
+                .any(|r| stem.eq_ignore_ascii_case(r))
+            {
                 return Err(Error::invalid(input, "component is a reserved device name"));
             }
             parts.push(raw);
@@ -116,7 +125,9 @@ impl VaultPath {
     }
 
     pub fn parent(&self) -> Option<VaultPath> {
-        self.0.rfind('/').map(|i| VaultPath(self.0[..i].to_string()))
+        self.0
+            .rfind('/')
+            .map(|i| VaultPath(self.0[..i].to_string()))
     }
 
     pub fn is_markdown(&self) -> bool {
@@ -209,8 +220,10 @@ impl VaultRoot {
         let rel = real
             .strip_prefix(&self.root)
             .map_err(|_| Error::PathEscapesVault(real.clone()))?;
-        let text: Vec<String> =
-            rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+        let text: Vec<String> = rel
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect();
         VaultPath::new(text.join("/"))
     }
 }
@@ -221,8 +234,13 @@ mod tests {
 
     #[test]
     fn accepts_ordinary_paths() {
-        let good =
-            ["note.md", "Daily/2026-09-02.md", "a/b/c/deep.md", "with space.md", "emoji-check.md"];
+        let good = [
+            "note.md",
+            "Daily/2026-09-02.md",
+            "a/b/c/deep.md",
+            "with space.md",
+            "emoji-check.md",
+        ];
         for g in good {
             assert!(VaultPath::new(g).is_ok(), "should accept {g}");
         }
@@ -230,7 +248,10 @@ mod tests {
 
     #[test]
     fn normalises_separators_and_redundant_components() {
-        assert_eq!(VaultPath::new("Daily\\2026.md").unwrap().as_str(), "Daily/2026.md");
+        assert_eq!(
+            VaultPath::new("Daily\\2026.md").unwrap().as_str(),
+            "Daily/2026.md"
+        );
         assert_eq!(VaultPath::new("a//b/./c.md").unwrap().as_str(), "a/b/c.md");
     }
 
@@ -257,7 +278,15 @@ mod tests {
     fn rejects_windows_hostile_names_on_every_platform() {
         // These would make a Linux-authored vault fail to open on Windows.
         // Rejecting them everywhere keeps vaults portable.
-        let bad = ["CON", "aux.md", "COM1.txt", "nul", "trailing.", "trailing ", "a/PRN/b.md"];
+        let bad = [
+            "CON",
+            "aux.md",
+            "COM1.txt",
+            "nul",
+            "trailing.",
+            "trailing ",
+            "a/PRN/b.md",
+        ];
         for b in bad {
             assert!(VaultPath::new(b).is_err(), "should reject {b:?}");
         }
@@ -310,7 +339,10 @@ mod tests {
             root.relativize(&outside.join("secret.md")),
             Err(Error::PathEscapesVault(_))
         ));
-        assert_eq!(root.relativize(&vault.join("inside.md")).unwrap().as_str(), "inside.md");
+        assert_eq!(
+            root.relativize(&vault.join("inside.md")).unwrap().as_str(),
+            "inside.md"
+        );
     }
 
     #[test]
@@ -340,6 +372,9 @@ mod tests {
         let root = VaultRoot::open(&vault).unwrap();
         let vp = VaultPath::new("innocent.md").unwrap();
         // The path text is spotless. Only canonicalisation catches this.
-        assert!(matches!(root.resolve_existing(&vp), Err(Error::PathEscapesVault(_))));
+        assert!(matches!(
+            root.resolve_existing(&vp),
+            Err(Error::PathEscapesVault(_))
+        ));
     }
 }

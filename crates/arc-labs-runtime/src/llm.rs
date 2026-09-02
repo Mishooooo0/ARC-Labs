@@ -32,7 +32,9 @@ use std::time::{Duration, Instant};
 pub enum LlmError {
     #[error("the model endpoint is not reachable at {0}")]
     Unreachable(String),
-    #[error("https endpoints are not supported; ARC-LABS speaks plain HTTP to a local or LAN model")]
+    #[error(
+        "https endpoints are not supported; ARC-LABS speaks plain HTTP to a local or LAN model"
+    )]
     HttpsNotSupported,
     #[error("{0} is not a usable endpoint")]
     BadEndpoint(String),
@@ -172,8 +174,13 @@ pub fn parse_endpoint(endpoint: &str) -> Result<(String, u16)> {
 /// might resolve to loopback, because "might" is not a basis for deciding
 /// whether someone's notes left their computer.
 pub fn is_local(endpoint: &str) -> bool {
-    let Ok((host, _)) = parse_endpoint(endpoint) else { return false };
-    matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1" | "[::1]" | "0.0.0.0")
+    let Ok((host, _)) = parse_endpoint(endpoint) else {
+        return false;
+    };
+    matches!(
+        host.as_str(),
+        "localhost" | "127.0.0.1" | "::1" | "[::1]" | "0.0.0.0"
+    )
 }
 
 // ── Ollama ──────────────────────────────────────────────────────────────────
@@ -185,7 +192,10 @@ pub struct Ollama {
 
 impl Ollama {
     pub fn new(endpoint: impl Into<String>) -> Ollama {
-        Ollama { endpoint: endpoint.into(), connect_timeout: Duration::from_secs(5) }
+        Ollama {
+            endpoint: endpoint.into(),
+            connect_timeout: Duration::from_secs(5),
+        }
     }
 
     fn connect(&self) -> Result<TcpStream> {
@@ -213,7 +223,9 @@ impl Ollama {
         let req = format!(
             "GET /api/tags HTTP/1.1\r\nHost: {host}:{port}\r\nAccept: application/json\r\nConnection: close\r\n\r\n"
         );
-        stream.write_all(req.as_bytes()).map_err(|_| LlmError::Unreachable(self.endpoint.clone()))?;
+        stream
+            .write_all(req.as_bytes())
+            .map_err(|_| LlmError::Unreachable(self.endpoint.clone()))?;
 
         let mut body = String::new();
         let mut reader = BufReader::new(stream);
@@ -225,7 +237,9 @@ impl Ollama {
         Ok(parsed["models"]
             .as_array()
             .map(|a| {
-                a.iter().filter_map(|m| m["name"].as_str().map(str::to_string)).collect()
+                a.iter()
+                    .filter_map(|m| m["name"].as_str().map(str::to_string))
+                    .collect()
             })
             .unwrap_or_default())
     }
@@ -380,7 +394,11 @@ fn cost_of(tokens: usize, started: Instant) -> RunCost {
     RunCost {
         tokens,
         elapsed_ms: elapsed.as_millis(),
-        tokens_per_sec: if secs > 0.0 { tokens as f64 / secs } else { 0.0 },
+        tokens_per_sec: if secs > 0.0 {
+            tokens as f64 / secs
+        } else {
+            0.0
+        },
         peak_rss_bytes: peak_rss(),
     }
 }
@@ -395,7 +413,10 @@ pub fn peak_rss() -> u64 {
         if let Ok(s) = std::fs::read_to_string("/proc/self/status") {
             for line in s.lines() {
                 if let Some(rest) = line.strip_prefix("VmHWM:") {
-                    if let Some(kb) = rest.split_whitespace().next().and_then(|v| v.parse::<u64>().ok())
+                    if let Some(kb) = rest
+                        .split_whitespace()
+                        .next()
+                        .and_then(|v| v.parse::<u64>().ok())
                     {
                         return kb * 1024;
                     }
@@ -433,7 +454,11 @@ pub struct MockLlm {
 
 impl MockLlm {
     pub fn response_for(prompt: &str) -> String {
-        format!("[mock:{}] {}", &blake3::hash(prompt.as_bytes()).to_hex()[..8], prompt.trim())
+        format!(
+            "[mock:{}] {}",
+            &blake3::hash(prompt.as_bytes()).to_hex()[..8],
+            prompt.trim()
+        )
     }
 }
 
@@ -495,9 +520,18 @@ mod tests {
 
     #[test]
     fn endpoint_parsing_handles_what_people_write() {
-        assert_eq!(parse_endpoint("http://localhost:11434").unwrap(), ("localhost".into(), 11434));
-        assert_eq!(parse_endpoint("localhost").unwrap(), ("localhost".into(), 11434));
-        assert_eq!(parse_endpoint("http://127.0.0.1:1234/").unwrap(), ("127.0.0.1".into(), 1234));
+        assert_eq!(
+            parse_endpoint("http://localhost:11434").unwrap(),
+            ("localhost".into(), 11434)
+        );
+        assert_eq!(
+            parse_endpoint("localhost").unwrap(),
+            ("localhost".into(), 11434)
+        );
+        assert_eq!(
+            parse_endpoint("http://127.0.0.1:1234/").unwrap(),
+            ("127.0.0.1".into(), 1234)
+        );
         assert_eq!(
             parse_endpoint("http://workstation.local:11434").unwrap(),
             ("workstation.local".into(), 11434)
@@ -517,7 +551,11 @@ mod tests {
     /// The check that decides whether a run counts as egress.
     #[test]
     fn only_unambiguous_loopback_counts_as_local() {
-        for local in ["http://localhost:11434", "127.0.0.1:11434", "http://[::1]:11434"] {
+        for local in [
+            "http://localhost:11434",
+            "127.0.0.1:11434",
+            "http://[::1]:11434",
+        ] {
             assert!(is_local(local), "{local} should be local");
         }
         for remote in [
@@ -535,11 +573,16 @@ mod tests {
 
     #[test]
     fn the_mock_is_deterministic_and_streams() {
-        let m = MockLlm { chunks: 5, delay_ms: 0 };
+        let m = MockLlm {
+            chunks: 5,
+            delay_ms: 0,
+        };
         let req = GenerateRequest::new("mock", "summarise this note");
 
         let mut pieces = Vec::new();
-        let a = m.generate(&req, &Cancel::new(), &mut |t| pieces.push(t.to_string())).unwrap();
+        let a = m
+            .generate(&req, &Cancel::new(), &mut |t| pieces.push(t.to_string()))
+            .unwrap();
         assert!(pieces.len() > 1, "should stream in pieces");
         assert_eq!(pieces.concat(), a.text);
 
@@ -550,9 +593,15 @@ mod tests {
 
     #[test]
     fn cancelling_stops_the_stream_and_reports_it() {
-        let m = MockLlm { chunks: 40, delay_ms: 2 };
+        let m = MockLlm {
+            chunks: 40,
+            delay_ms: 2,
+        };
         let cancel = Cancel::new();
-        let req = GenerateRequest::new("mock", "a fairly long prompt so there are many chunks to stream");
+        let req = GenerateRequest::new(
+            "mock",
+            "a fairly long prompt so there are many chunks to stream",
+        );
 
         let mut seen = 0;
         let result = m.generate(&req, &cancel, &mut |_| {
@@ -562,12 +611,18 @@ mod tests {
             }
         });
         assert!(matches!(result, Err(LlmError::Cancelled)));
-        assert!((3..40).contains(&seen), "should stop early, saw {seen} chunks");
+        assert!(
+            (3..40).contains(&seen),
+            "should stop early, saw {seen} chunks"
+        );
     }
 
     #[test]
     fn the_mock_handles_multibyte_prompts() {
-        let m = MockLlm { chunks: 4, delay_ms: 0 };
+        let m = MockLlm {
+            chunks: 4,
+            delay_ms: 0,
+        };
         let req = GenerateRequest::new("mock", "café ☕ 日本語 naïve");
         let out = m.generate(&req, &Cancel::new(), &mut |_| {}).unwrap();
         assert!(out.text.contains("café"));
@@ -575,13 +630,12 @@ mod tests {
 
     #[test]
     fn an_unreachable_endpoint_fails_promptly_and_says_where() {
-        let o = Ollama { endpoint: "http://127.0.0.1:1".into(), connect_timeout: Duration::from_millis(300) };
+        let o = Ollama {
+            endpoint: "http://127.0.0.1:1".into(),
+            connect_timeout: Duration::from_millis(300),
+        };
         let err = o
-            .generate(
-                &GenerateRequest::new("m", "p"),
-                &Cancel::new(),
-                &mut |_| {},
-            )
+            .generate(&GenerateRequest::new("m", "p"), &Cancel::new(), &mut |_| {})
             .unwrap_err();
         assert!(matches!(err, LlmError::Unreachable(_)));
     }

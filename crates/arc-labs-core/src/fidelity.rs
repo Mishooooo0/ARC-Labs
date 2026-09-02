@@ -109,7 +109,11 @@ impl NoteText {
                 // An empty or single-line file has no evidence either way. LF is
                 // the safer default: it is what Obsidian writes for .canvas, what
                 // git prefers, and it is what every platform reads correctly.
-                dominant: if crlf > lf { LineEnding::Crlf } else { LineEnding::Lf },
+                dominant: if crlf > lf {
+                    LineEnding::Crlf
+                } else {
+                    LineEnding::Lf
+                },
                 mixed: crlf > 0 && lf > 0,
                 had_bom,
                 ends_with_newline: text.ends_with('\n'),
@@ -168,14 +172,14 @@ mod tests {
     #[test]
     fn unchanged_content_reencodes_to_identical_bytes() {
         let cases: &[&[u8]] = &[
-            b"# Title\r\nbody\r\n",                       // CRLF, as his notes are
-            b"# Title\nbody\n",                           // LF, as his .canvas files are
-            b"\xEF\xBB\xBF# Title\r\nbody\r\n",           // CRLF with a BOM
-            b"# Title\r\nmixed\nendings\r\n",             // mixed, the nasty one
-            b"no trailing newline",                       // no terminator
-            b"",                                          // zero-byte note (his vault has two)
-            b"\r\n\r\n\r\n",                              // only line breaks
-            b"lone \r carriage return",                   // a bare CR, preserved as a char
+            b"# Title\r\nbody\r\n",             // CRLF, as his notes are
+            b"# Title\nbody\n",                 // LF, as his .canvas files are
+            b"\xEF\xBB\xBF# Title\r\nbody\r\n", // CRLF with a BOM
+            b"# Title\r\nmixed\nendings\r\n",   // mixed, the nasty one
+            b"no trailing newline",             // no terminator
+            b"",                                // zero-byte note (his vault has two)
+            b"\r\n\r\n\r\n",                    // only line breaks
+            b"lone \r carriage return",         // a bare CR, preserved as a char
         ];
         for raw in cases {
             let note = NoteText::decode(raw).expect("valid utf-8");
@@ -212,7 +216,10 @@ mod tests {
         assert_eq!(bom.text(), "a\n");
 
         // No evidence either way defaults to LF.
-        assert_eq!(NoteText::decode(b"").unwrap().fidelity().line_ending(), LineEnding::Lf);
+        assert_eq!(
+            NoteText::decode(b"").unwrap().fidelity().line_ending(),
+            LineEnding::Lf
+        );
     }
 
     #[test]

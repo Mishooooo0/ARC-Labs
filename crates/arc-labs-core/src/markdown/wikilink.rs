@@ -61,21 +61,33 @@ pub fn scan(text: &str) -> Vec<Found> {
         // `![[` — an embed. Checked before `[[` so the `!` is consumed.
         if bytes[i] == b'!' && bytes[i + 1..].starts_with(b"[[") {
             if let Some((link, end)) = parse_link(text, i + 3, true) {
-                out.push(Found { start: i, end, item: Item::Link(link) });
+                out.push(Found {
+                    start: i,
+                    end,
+                    item: Item::Link(link),
+                });
                 i = end;
                 continue;
             }
         }
         if bytes[i..].starts_with(b"[[") {
             if let Some((link, end)) = parse_link(text, i + 2, false) {
-                out.push(Found { start: i, end, item: Item::Link(link) });
+                out.push(Found {
+                    start: i,
+                    end,
+                    item: Item::Link(link),
+                });
                 i = end;
                 continue;
             }
         }
         if bytes[i] == b'#' && tag_may_start_at(text, i) {
             if let Some((name, end)) = parse_tag(text, i + 1) {
-                out.push(Found { start: i, end, item: Item::Tag(name) });
+                out.push(Found {
+                    start: i,
+                    end,
+                    item: Item::Tag(name),
+                });
                 i = end;
                 continue;
             }
@@ -227,7 +239,14 @@ mod tests {
 
     #[test]
     fn rejects_malformed_links() {
-        for bad in ["[[unclosed", "[[]]", "[[|alias]]", "[[a\nb]]", "[[a[b]]", "[single]"] {
+        for bad in [
+            "[[unclosed",
+            "[[]]",
+            "[[|alias]]",
+            "[[a\nb]]",
+            "[[a[b]]",
+            "[single]",
+        ] {
             assert!(links(bad).is_empty(), "should not parse {bad:?}");
         }
     }
@@ -253,14 +272,14 @@ mod tests {
     fn rejects_hashes_that_are_not_tags() {
         // Each of these is a real false positive a regex would produce.
         for bad in [
-            "C# is a language",     // trailing hash on a word
-            "issue#42",             // hash inside a word
-            "#42",                  // all-numeric
-            "# ",                   // bare hash
-            "##double",             // second hash follows a hash
-            "#/leading-slash",      // typo
-            "#trailing/",           // typo
-            "a#b",                  // hash inside a word
+            "C# is a language", // trailing hash on a word
+            "issue#42",         // hash inside a word
+            "#42",              // all-numeric
+            "# ",               // bare hash
+            "##double",         // second hash follows a hash
+            "#/leading-slash",  // typo
+            "#trailing/",       // typo
+            "a#b",              // hash inside a word
         ] {
             assert!(tags(bad).is_empty(), "should not find a tag in {bad:?}");
         }
@@ -287,7 +306,10 @@ mod tests {
     #[test]
     fn embed_marker_is_not_swallowed_by_the_plain_link_branch() {
         let found = scan("![[X]]");
-        assert_eq!(found[0].start, 0, "the `!` must be part of the matched range");
+        assert_eq!(
+            found[0].start, 0,
+            "the `!` must be part of the matched range"
+        );
         assert_eq!(found[0].end, 6);
     }
 }

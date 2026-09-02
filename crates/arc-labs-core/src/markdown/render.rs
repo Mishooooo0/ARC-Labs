@@ -121,13 +121,21 @@ pub fn render(text: &str) -> RenderedNote {
         };
         let mut text = String::new();
         collect_text(node, &mut text);
-        out.headings.push(Heading { level, text: text.trim().to_string(), line });
+        out.headings.push(Heading {
+            level,
+            text: text.trim().to_string(),
+            line,
+        });
     }
 
     for node in text_nodes {
         // Never rewrite inside an existing link: `[see [[X]]](url)` is one link
         // whose label happens to contain brackets, not a nested wikilink.
-        if node.ancestors().skip(1).any(|a| matches!(a.data.borrow().value, NodeValue::Link(_))) {
+        if node
+            .ancestors()
+            .skip(1)
+            .any(|a| matches!(a.data.borrow().value, NodeValue::Link(_)))
+        {
             continue;
         }
 
@@ -183,7 +191,12 @@ fn rewrite<'a>(
                 if !out.tags.iter().any(|t| t.eq_ignore_ascii_case(name)) {
                     out.tags.push(name.clone());
                 }
-                link_node(arena, &format!("{SCHEME}tag/{}", pct(name)), &format!("#{name}"), pos)
+                link_node(
+                    arena,
+                    &format!("{SCHEME}tag/{}", pct(name)),
+                    &format!("#{name}"),
+                    pos,
+                )
             }
         };
         node.insert_before(replacement);
@@ -221,15 +234,13 @@ fn text_node<'a>(arena: &'a Arena<'a>, s: &str, pos: LineColumn) -> &'a AstNode<
     node(arena, NodeValue::Text(s.to_owned().into()), pos)
 }
 
-fn link_node<'a>(
-    arena: &'a Arena<'a>,
-    url: &str,
-    label: &str,
-    pos: LineColumn,
-) -> &'a AstNode<'a> {
+fn link_node<'a>(arena: &'a Arena<'a>, url: &str, label: &str, pos: LineColumn) -> &'a AstNode<'a> {
     let link = node(
         arena,
-        NodeValue::Link(Box::new(NodeLink { url: url.to_owned(), title: String::new() })),
+        NodeValue::Link(Box::new(NodeLink {
+            url: url.to_owned(),
+            title: String::new(),
+        })),
         pos,
     );
     link.append(text_node(arena, label, pos));
@@ -262,17 +273,25 @@ mod tests {
 
     #[test]
     fn collects_headings_with_levels_and_lines() {
-        let r = render("# One
+        let r = render(
+            "# One
 
 text
 
 ## Two *emphasised*
 
 ### `code heading`
-");
-        let got: Vec<(u8, &str)> =
-            r.headings.iter().map(|h| (h.level, h.text.as_str())).collect();
-        assert_eq!(got, [(1, "One"), (2, "Two emphasised"), (3, "code heading")]);
+",
+        );
+        let got: Vec<(u8, &str)> = r
+            .headings
+            .iter()
+            .map(|h| (h.level, h.text.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            [(1, "One"), (2, "Two emphasised"), (3, "code heading")]
+        );
         // Lines are 1-based and in document order.
         assert!(r.headings.windows(2).all(|w| w[0].line < w[1].line));
         assert_eq!(r.headings[0].line, 1);
@@ -282,13 +301,15 @@ text
     fn heading_lines_are_relative_to_the_body_not_the_file() {
         // Frontmatter is split off before parsing, so a heading on the first
         // body line is line 1 regardless of how long the frontmatter was.
-        let r = render("---
+        let r = render(
+            "---
 a: 1
 b: 2
 c: 3
 ---
 # First
-");
+",
+        );
         assert_eq!(r.headings[0].line, 1);
     }
 
@@ -317,13 +338,20 @@ c: 3
         let r = render("---\ntitle: T\n---\n# Body\n");
         assert_eq!(r.frontmatter.as_deref(), Some("title: T\n"));
         assert!(r.html.contains("<h1>Body</h1>"));
-        assert!(!r.html.contains("title: T"), "frontmatter must not render as content");
+        assert!(
+            !r.html.contains("title: T"),
+            "frontmatter must not render as content"
+        );
     }
 
     #[test]
     fn wikilinks_become_arc_scheme_links() {
         let r = render("See [[Other Note|the alias]].\n");
-        assert!(r.html.contains("href=\"arc://note/Other%20Note\""), "got: {}", r.html);
+        assert!(
+            r.html.contains("href=\"arc://note/Other%20Note\""),
+            "got: {}",
+            r.html
+        );
         assert!(r.html.contains(">the alias</a>"));
         assert_eq!(r.links.len(), 1);
         assert_eq!(r.links[0].target, "Other Note");
@@ -371,7 +399,11 @@ c: 3
     #[test]
     fn existing_markdown_links_are_left_alone() {
         let r = render("[label [[X]]](https://example.com)\n");
-        assert!(r.links.is_empty(), "rewrote inside an existing link: {:?}", r.links);
+        assert!(
+            r.links.is_empty(),
+            "rewrote inside an existing link: {:?}",
+            r.links
+        );
         assert!(r.html.contains("https://example.com"));
     }
 
@@ -382,17 +414,32 @@ c: 3
         // What matters is that no tag survives as a *tag*. The attribute text
         // may still appear as literal characters inside an escaped element —
         // that is the point of escaping rather than dropping, and it is inert.
-        assert!(!r.html.contains("<script"), "raw script survived: {}", r.html);
+        assert!(
+            !r.html.contains("<script"),
+            "raw script survived: {}",
+            r.html
+        );
         assert!(!r.html.contains("<img"), "raw img survived: {}", r.html);
-        assert!(r.html.contains("&lt;script&gt;"), "text was dropped instead of escaped");
+        assert!(
+            r.html.contains("&lt;script&gt;"),
+            "text was dropped instead of escaped"
+        );
         assert!(r.html.contains("&lt;img src=x onerror=alert(1)&gt;"));
     }
 
     #[test]
     fn a_hostile_note_name_cannot_break_out_of_the_href() {
         let r = render("[[evil\" onmouseover=\"alert(1)]]\n");
-        assert!(!r.html.contains("onmouseover=\"alert"), "escaped the attribute: {}", r.html);
-        assert!(r.html.contains("%22"), "the quote should be percent-encoded: {}", r.html);
+        assert!(
+            !r.html.contains("onmouseover=\"alert"),
+            "escaped the attribute: {}",
+            r.html
+        );
+        assert!(
+            r.html.contains("%22"),
+            "the quote should be percent-encoded: {}",
+            r.html
+        );
     }
 
     #[test]

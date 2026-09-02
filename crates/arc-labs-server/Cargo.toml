@@ -10,6 +10,8 @@ repository.workspace   = true
 [dependencies]
 arc-labs-core = { workspace = true }
 arc-labs-api  = { workspace = true }
+arc-labs-mcp  = { workspace = true }
+arc-labs-weave = { workspace = true }
 anyhow        = { workspace = true }
 serde         = { workspace = true }
 serde_json    = { workspace = true }

@@ -34,7 +34,10 @@ impl RunNode {
         self.options.get(key).and_then(|v| v.as_f64())
     }
     pub fn option_usize(&self, key: &str) -> Option<usize> {
-        self.options.get(key).and_then(|v| v.as_u64()).map(|v| v as usize)
+        self.options
+            .get(key)
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize)
     }
 }
 
@@ -165,8 +168,11 @@ fn plan_subset(graph: &Graph, wanted: &HashSet<String>) -> Plan {
     // Sorted seeds so the order is deterministic. Phase 5's gate says the same
     // graph run twice produces identical output, and a HashMap iteration order
     // would quietly break that for any graph with two independent roots.
-    let mut roots: Vec<&str> =
-        in_degree.iter().filter(|(_, d)| **d == 0).map(|(id, _)| *id).collect();
+    let mut roots: Vec<&str> = in_degree
+        .iter()
+        .filter(|(_, d)| **d == 0)
+        .map(|(id, _)| *id)
+        .collect();
     roots.sort_unstable();
     let mut queue: VecDeque<&str> = roots.into_iter().collect();
 
@@ -194,8 +200,11 @@ fn plan_subset(graph: &Graph, wanted: &HashSet<String>) -> Plan {
         Plan::Order(order)
     } else {
         let done: HashSet<&String> = order.iter().collect();
-        let mut stuck: Vec<String> =
-            wanted.iter().filter(|id| !done.contains(id)).cloned().collect();
+        let mut stuck: Vec<String> = wanted
+            .iter()
+            .filter(|id| !done.contains(id))
+            .cloned()
+            .collect();
         stuck.sort();
         Plan::Cycle(stuck)
     }
@@ -256,7 +265,11 @@ mod tests {
     #[test]
     fn reads_arc_nodes_and_leaves_plain_cards_alone() {
         let c = canvas(
-            &[("q", "query", "ledger"), ("p", "prompt", "Summarise {{q}}"), ("plain", "", "hello")],
+            &[
+                ("q", "query", "ledger"),
+                ("p", "prompt", "Summarise {{q}}"),
+                ("plain", "", "hello"),
+            ],
             &[("q", "p")],
         );
         let g = Graph::from_canvas(&c);
@@ -280,7 +293,10 @@ mod tests {
             &[("q", "p"), ("p", "t")],
         );
         let g = Graph::from_canvas(&c);
-        assert_eq!(plan_for(&g, "t"), Plan::Order(vec!["q".into(), "p".into(), "t".into()]));
+        assert_eq!(
+            plan_for(&g, "t"),
+            Plan::Order(vec!["q".into(), "p".into(), "t".into()])
+        );
     }
 
     #[test]
@@ -297,7 +313,9 @@ mod tests {
             &[("a", "b"), ("other", "other2")],
         );
         let g = Graph::from_canvas(&c);
-        let Plan::Order(order) = plan_for(&g, "b") else { panic!("expected an order") };
+        let Plan::Order(order) = plan_for(&g, "b") else {
+            panic!("expected an order")
+        };
         assert_eq!(order, ["a", "b"]);
         assert!(!order.contains(&"other".to_string()));
     }
@@ -305,7 +323,11 @@ mod tests {
     #[test]
     fn a_cycle_is_reported_with_the_nodes_in_it() {
         let c = canvas(
-            &[("a", "prompt", "{{c}}"), ("b", "prompt", "{{a}}"), ("c", "prompt", "{{b}}")],
+            &[
+                ("a", "prompt", "{{c}}"),
+                ("b", "prompt", "{{a}}"),
+                ("c", "prompt", "{{b}}"),
+            ],
             &[("a", "b"), ("b", "c"), ("c", "a")],
         );
         let g = Graph::from_canvas(&c);
@@ -324,7 +346,11 @@ mod tests {
     #[test]
     fn an_acyclic_canvas_reports_no_cycle() {
         let c = canvas(
-            &[("a", "query", "x"), ("b", "prompt", "{{a}}"), ("c", "transform", "dedupe")],
+            &[
+                ("a", "query", "x"),
+                ("b", "prompt", "{{a}}"),
+                ("c", "transform", "dedupe"),
+            ],
             &[("a", "b"), ("b", "c"), ("a", "c")],
         );
         assert!(find_cycle(&Graph::from_canvas(&c)).is_none());
@@ -346,7 +372,11 @@ mod tests {
 
         let first = plan_for(&g, "sink");
         for _ in 0..25 {
-            assert_eq!(plan_for(&g, "sink"), first, "plan order varied between runs");
+            assert_eq!(
+                plan_for(&g, "sink"),
+                first,
+                "plan order varied between runs"
+            );
         }
         // Independent roots come out sorted, not in hash order.
         assert_eq!(
@@ -359,14 +389,20 @@ mod tests {
     fn cycle_detection_is_fast_enough_to_run_on_every_edit() {
         // The gate is 100 ms. Build something far larger than a real canvas and
         // confirm the check is not close to the budget.
-        let nodes: Vec<(String, &str, String)> =
-            (0..2000).map(|i| (format!("n{i}"), "transform", String::new())).collect();
-        let node_refs: Vec<(&str, &str, &str)> =
-            nodes.iter().map(|(a, b, c)| (a.as_str(), *b, c.as_str())).collect();
-        let edge_owned: Vec<(String, String)> =
-            (0..1999).map(|i| (format!("n{i}"), format!("n{}", i + 1))).collect();
-        let mut edges: Vec<(&str, &str)> =
-            edge_owned.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+        let nodes: Vec<(String, &str, String)> = (0..2000)
+            .map(|i| (format!("n{i}"), "transform", String::new()))
+            .collect();
+        let node_refs: Vec<(&str, &str, &str)> = nodes
+            .iter()
+            .map(|(a, b, c)| (a.as_str(), *b, c.as_str()))
+            .collect();
+        let edge_owned: Vec<(String, String)> = (0..1999)
+            .map(|i| (format!("n{i}"), format!("n{}", i + 1)))
+            .collect();
+        let mut edges: Vec<(&str, &str)> = edge_owned
+            .iter()
+            .map(|(a, b)| (a.as_str(), b.as_str()))
+            .collect();
         // Close the loop, so the worst case is detecting a cycle rather than
         // finding an order.
         edges.push(("n1999", "n0"));

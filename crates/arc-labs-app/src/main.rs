@@ -55,7 +55,10 @@ fn save_note(
 }
 
 #[tauri::command]
-fn runnability(api: tauri::State<'_, Arc<Api>>, path: VaultPath) -> CmdResult<arc_labs_api::CanvasRunnability> {
+fn runnability(
+    api: tauri::State<'_, Arc<Api>>,
+    path: VaultPath,
+) -> CmdResult<arc_labs_api::CanvasRunnability> {
     api.canvas_runnability(&path)
 }
 
@@ -99,22 +102,36 @@ fn move_canvas(
 }
 
 #[tauri::command]
-fn timeline(api: tauri::State<'_, Arc<Api>>, path: VaultPath) -> CmdResult<Vec<arc_labs_api::TimelineEntry>> {
+fn timeline(
+    api: tauri::State<'_, Arc<Api>>,
+    path: VaultPath,
+) -> CmdResult<Vec<arc_labs_api::TimelineEntry>> {
     api.timeline(&path)
 }
 
 #[tauri::command]
-fn proposals(api: tauri::State<'_, Arc<Api>>, path: VaultPath) -> CmdResult<Vec<arc_labs_api::Proposal>> {
+fn proposals(
+    api: tauri::State<'_, Arc<Api>>,
+    path: VaultPath,
+) -> CmdResult<Vec<arc_labs_api::Proposal>> {
     api.proposals(&path)
 }
 
 #[tauri::command]
-fn entry_diff(api: tauri::State<'_, Arc<Api>>, path: VaultPath, index: usize) -> CmdResult<arc_labs_api::EntryDiff> {
+fn entry_diff(
+    api: tauri::State<'_, Arc<Api>>,
+    path: VaultPath,
+    index: usize,
+) -> CmdResult<arc_labs_api::EntryDiff> {
     api.entry_diff(&path, index)
 }
 
 #[tauri::command]
-fn restore(api: tauri::State<'_, Arc<Api>>, path: VaultPath, index: usize) -> CmdResult<SaveResult> {
+fn restore(
+    api: tauri::State<'_, Arc<Api>>,
+    path: VaultPath,
+    index: usize,
+) -> CmdResult<SaveResult> {
     api.restore(&path, index)
 }
 
@@ -143,12 +160,20 @@ fn propose(
 }
 
 #[tauri::command]
-fn search(api: tauri::State<'_, Arc<Api>>, q: String, limit: Option<usize>) -> CmdResult<Vec<Q::SearchHit>> {
+fn search(
+    api: tauri::State<'_, Arc<Api>>,
+    q: String,
+    limit: Option<usize>,
+) -> CmdResult<Vec<Q::SearchHit>> {
     api.search(&q, limit.unwrap_or(50))
 }
 
 #[tauri::command]
-fn quick_open(api: tauri::State<'_, Arc<Api>>, q: String, limit: Option<usize>) -> CmdResult<Vec<Q::NoteRef>> {
+fn quick_open(
+    api: tauri::State<'_, Arc<Api>>,
+    q: String,
+    limit: Option<usize>,
+) -> CmdResult<Vec<Q::NoteRef>> {
     api.quick_open(&q, limit.unwrap_or(50))
 }
 
@@ -168,7 +193,10 @@ fn outgoing(api: tauri::State<'_, Arc<Api>>, path: VaultPath) -> CmdResult<Vec<Q
 }
 
 #[tauri::command]
-fn unresolved(api: tauri::State<'_, Arc<Api>>, limit: Option<usize>) -> CmdResult<Vec<Q::UnresolvedLink>> {
+fn unresolved(
+    api: tauri::State<'_, Arc<Api>>,
+    limit: Option<usize>,
+) -> CmdResult<Vec<Q::UnresolvedLink>> {
     api.unresolved(limit.unwrap_or(100))
 }
 
@@ -192,6 +220,57 @@ fn index_stats(api: tauri::State<'_, Arc<Api>>) -> CmdResult<Q::IndexStats> {
     api.index_stats()
 }
 
+// --- Phase 6 ---------------------------------------------------------------
+
+#[tauri::command]
+fn suggestions(
+    api: tauri::State<'_, Arc<Api>>,
+    limit: Option<usize>,
+) -> CmdResult<Vec<arc_labs_api::LinkSuggestion>> {
+    api.suggestions(limit.unwrap_or(50))
+}
+
+#[tauri::command]
+fn accept_suggestion(
+    api: tauri::State<'_, Arc<Api>>,
+    id: i64,
+) -> CmdResult<arc_labs_api::SaveResult> {
+    api.accept_suggestion(id)
+}
+
+#[tauri::command]
+fn dismiss_suggestion(api: tauri::State<'_, Arc<Api>>, id: i64) -> CmdResult<()> {
+    api.dismiss_suggestion(id)
+}
+
+#[tauri::command]
+fn weave_status(api: tauri::State<'_, Arc<Api>>) -> CmdResult<arc_labs_api::WeaveStatus> {
+    api.weave_status()
+}
+
+/// Run one bounded pass on request.
+///
+/// `async` and off the main thread: a pass is short by design, but it is not
+/// instant, and blocking the webview's command thread would freeze the window.
+#[tauri::command]
+async fn weave_pass(api: tauri::State<'_, Arc<Api>>) -> CmdResult<arc_labs_weave::PassReport> {
+    let api = Arc::clone(&api);
+    tokio::task::spawn_blocking(move || api.weave_pass())
+        .await
+        .map_err(|e| arc_labs_api::ApiError::new(arc_labs_api::ErrorCode::Io, e.to_string()))?
+}
+
+/// The editor calls this on every keystroke.
+///
+/// One atomic store, and the whole reason Weave stops while you type. It is a
+/// command rather than something inferred from `save_note` because a save is
+/// debounced 400 ms — by the time one arrives, the burst of typing that should
+/// have silenced Weave is already over.
+#[tauri::command]
+fn user_active(api: tauri::State<'_, Arc<Api>>) {
+    api.note_user_activity();
+}
+
 #[tauri::command]
 fn browse(api: tauri::State<'_, Arc<Api>>, path: Option<String>) -> CmdResult<DirListing> {
     api.browse(path.as_deref().map(std::path::Path::new))
@@ -207,9 +286,12 @@ fn open_vault(api: tauri::State<'_, Arc<Api>>, path: String) -> CmdResult<VaultI
 #[tauri::command]
 async fn pick_folder(app: tauri::AppHandle) -> Option<String> {
     let (tx, rx) = tokio::sync::oneshot::channel();
-    app.dialog().file().set_title("Open a vault").pick_folder(move |chosen| {
-        let _ = tx.send(chosen.map(|p| p.to_string()));
-    });
+    app.dialog()
+        .file()
+        .set_title("Open a vault")
+        .pick_folder(move |chosen| {
+            let _ = tx.send(chosen.map(|p| p.to_string()));
+        });
     rx.await.ok().flatten()
 }
 
@@ -229,7 +311,11 @@ fn main() {
         .unwrap_or_default();
 
     // The desktop user is sitting at the machine, so the full capability set.
-    let api = Arc::new(Api::new(config.clone(), config_path, Capabilities::desktop()));
+    let api = Arc::new(Api::new(
+        config.clone(),
+        config_path,
+        Capabilities::desktop(),
+    ));
 
     // `--vault` for parity with the CLI, then ARC_LABS_VAULT, then last used.
     let explicit = std::env::args()
@@ -242,6 +328,21 @@ fn main() {
             // Not fatal — the first-run screen exists for exactly this.
             Err(e) => tracing::warn!(error = %e, "could not open the configured vault"),
         }
+    }
+
+    // Weave, if the user turned it on. It waits for the index, which is built
+    // lazily on the first index-backed call, so this thread's early passes
+    // simply report "not ready yet" and retry — cheaper than another handshake.
+    if config.weave.enabled {
+        let weaving = Arc::clone(&api);
+        std::thread::spawn(move || {
+            if let Err(e) = weaving.open_index(false) {
+                tracing::warn!(error = %e, "weave: no index");
+                return;
+            }
+            tracing::info!("weave enabled");
+            std::mem::forget(arc_labs_api::weave::spawn(weaving));
+        });
     }
 
     tauri::Builder::default()
@@ -279,7 +380,13 @@ fn main() {
             index_stats,
             browse,
             open_vault,
-            pick_folder
+            pick_folder,
+            suggestions,
+            accept_suggestion,
+            dismiss_suggestion,
+            weave_status,
+            weave_pass,
+            user_active
         ])
         .setup(|app| {
             if let Some(window) = app.get_webview_window("main") {

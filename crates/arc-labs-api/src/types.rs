@@ -366,3 +366,54 @@ pub struct CanvasRunnability {
     /// Executable node ids, so the surface knows which cards get a Run control.
     pub runnable: Vec<String>,
 }
+
+// ---------------------------------------------------------------------------
+// Phase 6 — inferred, and labelled as such
+// ---------------------------------------------------------------------------
+
+/// A link ARC-LABS *thinks* might belong.
+///
+/// Constraint 7: never present an inference as an observation. That is why this
+/// is a different type from [`Link`] rather than a flag on it — a client cannot
+/// accidentally render one of these through the code path that draws real
+/// links, because the shapes do not match. `score` and `model` are not optional
+/// for the same reason: an inferred edge carries its provenance everywhere it
+/// appears, or it is not allowed to appear.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkSuggestion {
+    pub id: i64,
+    pub src_path: String,
+    pub src_title: String,
+    pub dst_path: String,
+    pub dst_title: String,
+    /// Cosine similarity, 0..1.
+    pub score: f64,
+    /// The embedding model that produced it.
+    pub model: String,
+    pub created_at: String,
+    /// Always true. On the wire so that a client which has never heard of this
+    /// type still cannot mistake it for an observed link.
+    pub inferred: bool,
+}
+
+/// What Weave is doing, for the inbox header and the status line.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WeaveStatus {
+    /// Whether a daemon thread is running right now.
+    pub running: bool,
+    /// Whether the user has turned it on at all.
+    pub enabled: bool,
+    pub model: String,
+    /// Notes embedded, out of notes in the vault.
+    pub embedded: i64,
+    pub total: i64,
+    pub open_suggestions: usize,
+    /// Fraction of one core used in the last minute. The budget is 0.15.
+    pub cpu_fraction: f64,
+    /// Seconds until the budget will allow work again. Zero means now.
+    pub cooling_secs: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_pass: Option<arc_labs_weave::PassReport>,
+}

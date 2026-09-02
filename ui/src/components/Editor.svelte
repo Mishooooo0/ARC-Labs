@@ -144,6 +144,15 @@
 
       EditorView.updateListener.of((u) => {
         if (!u.docChanged) return;
+        // Tell the backend a person is here, so Weave stands down for the next
+        // two seconds. It has to happen on the *keystroke*, not on the save:
+        // saves are debounced 400 ms, and by the time one lands, the burst of
+        // typing that should have silenced Weave is already over.
+        //
+        // Fire-and-forget, never awaited. On desktop it is one IPC hop; in a
+        // browser it is a no-op, because there the server owns the daemon and
+        // can see its own save traffic without being told.
+        transport.userActive();
         onstate(u.state.doc.toString() === committedText ? "clean" : "dirty");
         scheduleSave();
       }),

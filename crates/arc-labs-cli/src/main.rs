@@ -66,6 +66,25 @@ enum Command {
         #[arg(long)]
         clean: bool,
     },
+    /// Speak MCP on stdin/stdout, so another agent can use the vault.
+    ///
+    /// This is what a client like Claude Desktop spawns. It exposes search,
+    /// read, propose, link suggestions, canvases and the ledger — and
+    /// deliberately no tool that writes to a file.
+    Mcp,
+    /// Embed notes and suggest links between them.
+    ///
+    /// Runs inside a hard budget: at most 15% of one core averaged over a
+    /// minute, nothing at all within two seconds of a keystroke, and resumable,
+    /// so stopping it costs you at most the note it was on.
+    Weave {
+        /// Do one bounded pass and exit, instead of running as a daemon.
+        #[arg(long)]
+        once: bool,
+        /// Print what is waiting in the inbox and exit. Changes nothing.
+        #[arg(long)]
+        status: bool,
+    },
     /// Install the system packages this platform is missing. Asks first.
     Setup {
         /// Skip the prompt. For Docker builds and CI — never the interactive default.
@@ -76,7 +95,7 @@ enum Command {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    init_logging(&cli.log);
+    init_logging(&cli.log, matches!(cli.command, Some(Command::Mcp)));
 
     let config_path = cli.config.clone().or_else(Config::default_path);
     let config = match &config_path {
@@ -86,27 +105,50 @@ fn main() -> Result<()> {
 
     match cli.command {
         Some(Command::Doctor) => cmd_doctor(&cli, &config),
-        Some(Command::Reindex { force, clean }) => cmd_reindex(&cli, config, config_path, force, clean),
+        Some(Command::Reindex { force, clean }) => {
+            cmd_reindex(&cli, config, config_path, force, clean)
+        }
         Some(Command::Setup { yes }) => cmd_setup(&cli, &config, yes),
+        Some(Command::Mcp) => cmd_mcp(&cli, config, config_path),
+        Some(Command::Weave { once, status }) => cmd_weave(&cli, config, config_path, once, status),
         Some(Command::Serve { host, port, ui }) => {
             cmd_serve(cli.vault, config, config_path, host, port, ui)
         }
         // No subcommand is the common case: serve locally. The desktop window is
         // a separate binary, so the CLI's default is the mode the CLI can do.
-        None => cmd_serve(cli.vault, config, config_path, "127.0.0.1".parse()?, 7777, None),
+        None => cmd_serve(
+            cli.vault,
+            config,
+            config_path,
+            "127.0.0.1".parse()?,
+            7777,
+            None,
+        ),
     }
 }
 
-fn init_logging(level: &str) {
+/// `to_stderr` exists for one caller: `arc-labs mcp`, whose stdout carries the
+/// protocol. A log line on that stream corrupts the session and looks like the
+/// client's bug, so the choice is made here rather than left to a config file.
+fn init_logging(level: &str, to_stderr: bool) {
     use tracing_subscriber::EnvFilter;
     let filter = EnvFilter::try_from_env("ARC_LABS_LOG")
         .unwrap_or_else(|_| EnvFilter::new(format!("arc_labs={level},tower_http=warn")));
-    tracing_subscriber::fmt().with_env_filter(filter).with_target(false).init();
+    let builder = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(false);
+    if to_stderr {
+        builder.with_writer(std::io::stderr).init();
+    } else {
+        builder.init();
+    }
 }
 
 /// Vault to use: `--vault`, then `ARC_LABS_VAULT`, then the last one opened.
 fn resolve_vault(explicit: Option<PathBuf>, config: &Config) -> Option<PathBuf> {
-    explicit.or_else(Config::vault_from_env).or_else(|| config.vault.clone())
+    explicit
+        .or_else(Config::vault_from_env)
+        .or_else(|| config.vault.clone())
 }
 
 fn cmd_doctor(cli: &Cli, config: &Config) -> Result<()> {
@@ -209,6 +251,109 @@ fn cmd_reindex(
     Ok(())
 }
 
+/// Serve MCP on stdio.
+///
+/// Nothing may reach stdout but protocol messages, so logging is forced to
+/// stderr regardless of what `--log` said. A stray line on stdout corrupts the
+/// stream and produces a failure that looks like the client's fault.
+fn cmd_mcp(cli: &Cli, config: Config, config_path: Option<PathBuf>) -> Result<()> {
+    let Some(vault_path) = resolve_vault(cli.vault.clone(), &config) else {
+        anyhow::bail!("no vault; pass --vault or set ARC_LABS_VAULT");
+    };
+
+    let api = std::sync::Arc::new(Api::new(
+        config,
+        config_path,
+        arc_labs_api::Capabilities::desktop(),
+    ));
+    api.open_vault(&vault_path)?;
+    // Search is a tool, so the index has to be there before the first request.
+    if let Err(e) = api.open_index(false) {
+        tracing::warn!(error = %e.message, "starting without an index; search will be unavailable");
+    }
+    tracing::info!(vault = %vault_path.display(), "arc-labs mcp ready on stdio");
+
+    arc_labs_mcp::stdio::serve_stdio(&api)?;
+    Ok(())
+}
+
+fn cmd_weave(
+    cli: &Cli,
+    config: Config,
+    config_path: Option<PathBuf>,
+    once: bool,
+    status_only: bool,
+) -> Result<()> {
+    let Some(vault_path) = resolve_vault(cli.vault.clone(), &config) else {
+        anyhow::bail!("no vault; pass --vault or set ARC_LABS_VAULT");
+    };
+
+    let api = std::sync::Arc::new(Api::new(
+        config,
+        config_path,
+        arc_labs_api::Capabilities::desktop(),
+    ));
+    api.open_vault(&vault_path)?;
+    api.open_index(false)?;
+
+    if status_only {
+        return print_weave_status(&api);
+    }
+
+    loop {
+        let report = api.weave_pass()?;
+        println!(
+            "embedded {}, suggested {}, {} left  ({:.1}% of a core, {} ms){}",
+            report.embedded,
+            report.suggested,
+            report.remaining,
+            report.cpu_fraction * 100.0,
+            report.elapsed_ms,
+            match &report.stopped_because {
+                Some(why) => format!("  — stopped: {why}"),
+                None => String::new(),
+            }
+        );
+        if once || (report.remaining == 0 && report.stopped_because.is_none()) {
+            break;
+        }
+    }
+    print_weave_status(&api)
+}
+
+fn print_weave_status(api: &Api) -> Result<()> {
+    let status = api.weave_status()?;
+    println!(
+        "
+{} — {} of {} notes embedded",
+        status.model, status.embedded, status.total
+    );
+
+    let suggestions = api.suggestions(20)?;
+    if suggestions.is_empty() {
+        println!("no open link suggestions");
+        return Ok(());
+    }
+    // Every line says what these are. They are inferred, and a list that does
+    // not say so is a list someone will eventually read as fact.
+    println!(
+        "
+{} inferred link(s) — not observed, none applied:",
+        status.open_suggestions
+    );
+    for s in suggestions {
+        println!(
+            "  {:.3}  {} -> {}   [{}]",
+            s.score, s.src_path, s.dst_path, s.model
+        );
+    }
+    println!(
+        "
+Accept or dismiss them in the app; nothing here changes a file."
+    );
+    Ok(())
+}
+
 fn cmd_serve(
     vault: Option<PathBuf>,
     config: Config,
@@ -236,12 +381,31 @@ fn cmd_serve(
                 // and index-backed routes say "not ready yet" rather than
                 // blocking — a 5,000-note vault takes a few seconds, and making
                 // the whole app wait for it would be the wrong trade.
-                let api = Arc::clone(&api);
-                std::thread::spawn(move || match api.open_index(false) {
-                    Ok(s) => tracing::info!(
-                        notes = s.notes, links = s.links, ms = s.elapsed_ms, "index ready"
-                    ),
-                    Err(e) => tracing::warn!(error = %e, "could not build the index"),
+                let indexing = Arc::clone(&api);
+                let weave_enabled = config.weave.enabled;
+                std::thread::spawn(move || {
+                    match indexing.open_index(false) {
+                        Ok(s) => tracing::info!(
+                            notes = s.notes,
+                            links = s.links,
+                            ms = s.elapsed_ms,
+                            "index ready"
+                        ),
+                        Err(e) => {
+                            tracing::warn!(error = %e, "could not build the index");
+                            return;
+                        }
+                    }
+                    // Weave starts only after the index exists, and only if the
+                    // user asked for it. Embedding a whole vault is real work on
+                    // someone's machine; it is opted into, never discovered.
+                    if weave_enabled {
+                        tracing::info!("weave enabled");
+                        let daemon = arc_labs_api::weave::spawn(indexing);
+                        // Held for the life of the process. Dropping it here
+                        // would stop the thread it just started.
+                        std::mem::forget(daemon);
+                    }
                 });
             }
             // Not fatal: the first-run screen exists exactly for this.
@@ -260,7 +424,12 @@ fn cmd_serve(
     if let Some(token) = &cfg.token {
         // Printed once, to the operator's terminal only.
         println!("\n  Bound beyond loopback, so a token is required:\n");
-        println!("    http://{}:{}/?token={}\n", display_host(host), port, token);
+        println!(
+            "    http://{}:{}/?token={}\n",
+            display_host(host),
+            port,
+            token
+        );
         println!("  Anyone who can reach this port and has this token can read the vault.");
     }
 

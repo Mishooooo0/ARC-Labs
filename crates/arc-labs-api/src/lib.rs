@@ -18,6 +18,7 @@
 pub mod error;
 pub mod runs;
 pub mod types;
+pub mod weave;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
@@ -100,6 +101,13 @@ pub struct Api {
     /// Its own lock, because a run holds it for the length of a pipeline and
     /// nothing else should wait on that.
     runs: Arc<runs::Runs>,
+    /// The background link-suggestion daemon's shared state.
+    ///
+    /// Its budget lives here rather than in the daemon because the *editor*
+    /// writes to it — every keystroke calls [`Api::note_user_activity`], and the
+    /// budget is what turns that into Weave standing still. The daemon only
+    /// reads it.
+    weave: weave::WeaveState,
 }
 
 impl Api {
@@ -114,6 +122,7 @@ impl Api {
             }),
             index: Mutex::new(None),
             runs: runs::Runs::new(),
+            weave: weave::WeaveState::new(),
         }
     }
 
@@ -146,10 +155,16 @@ impl Api {
     fn vault_info(&self, vault: &Vault) -> VaultInfo {
         // Counts come from a tree walk, which is cheap enough at Phase 0 scale
         // and becomes an index lookup in Phase 2.
-        let (notes, canvases) = vault.tree().map(|t| (t.note_count, t.canvas_count)).unwrap_or((0, 0));
+        let (notes, canvases) = vault
+            .tree()
+            .map(|t| (t.note_count, t.canvas_count))
+            .unwrap_or((0, 0));
         VaultInfo {
             name: vault.name(),
-            path: self.caps.expose_paths.then(|| vault.root().path().display().to_string()),
+            path: self
+                .caps
+                .expose_paths
+                .then(|| vault.root().path().display().to_string()),
             note_count: notes,
             canvas_count: canvases,
         }
@@ -245,8 +260,18 @@ impl Api {
         text: &str,
         base_hash: Option<&str>,
     ) -> ApiResult<SaveResult> {
+        // A save means a person is here. It is the *only* activity signal the
+        // browser shell has — there is no per-keystroke round trip, and adding
+        // one would cost more than the daemon it is trying to quiet. Saves are
+        // debounced 400 ms and Weave's quiet period is two seconds, so a save
+        // per burst is enough to keep Weave still through continuous typing.
+        self.note_user_activity();
+
         // Captured before the write, for the ledger entry afterwards.
-        let before_text = self.with_vault(|v| Ok(v.read_note(path)?)).ok().map(|n| n.text().to_string());
+        let before_text = self
+            .with_vault(|v| Ok(v.read_note(path)?))
+            .ok()
+            .map(|n| n.text().to_string());
 
         let result = self.with_vault(|v| {
             let current = v.read_note(path)?;
@@ -264,12 +289,16 @@ impl Api {
                 .unwrap_or_else(|| current.content_hash());
 
             Ok(match saved {
-                arc_labs_core::Saved::Written { bytes } => {
-                    SaveResult { written: true, bytes, hash }
-                }
-                arc_labs_core::Saved::Unchanged => {
-                    SaveResult { written: false, bytes: 0, hash }
-                }
+                arc_labs_core::Saved::Written { bytes } => SaveResult {
+                    written: true,
+                    bytes,
+                    hash,
+                },
+                arc_labs_core::Saved::Unchanged => SaveResult {
+                    written: false,
+                    bytes: 0,
+                    hash,
+                },
             })
         })?;
 
@@ -305,7 +334,11 @@ impl Api {
     }
 
     pub fn config(&self) -> Config {
-        self.state.read().expect("state lock poisoned").config.clone()
+        self.state
+            .read()
+            .expect("state lock poisoned")
+            .config
+            .clone()
     }
 
     // ── Runtime ─────────────────────────────────────────────────────────────
@@ -360,7 +393,8 @@ impl Api {
         let config = self.config();
         let id = runs::next_run_id();
         let cancel = arc_labs_runtime::Cancel::new();
-        self.runs.start(&id, canvas.as_str(), target, cancel.clone());
+        self.runs
+            .start(&id, canvas.as_str(), target, cancel.clone());
 
         let runs = Arc::clone(&self.runs);
         let canvas_path = canvas.clone();
@@ -375,8 +409,7 @@ impl Api {
             // the app tries to search.
             let outcome = (|| -> Result<arc_labs_runtime::RunReport, String> {
                 let vault = Vault::open(&vault_root).map_err(|e| e.public())?;
-                let ledger =
-                    arc_labs_ledger::Ledger::open(&vault_root).map_err(|e| e.public())?;
+                let ledger = arc_labs_ledger::Ledger::open(&vault_root).map_err(|e| e.public())?;
                 let index = arc_labs_index::Index::open_for_vault(&vault_root).ok();
 
                 let ollama = arc_labs_runtime::Ollama::new(config.model.endpoint.clone());
@@ -390,21 +423,27 @@ impl Api {
                 };
 
                 runner
-                    .run(&canvas_path, &target, approve_egress, &cancel, &mut |event| {
-                        use arc_labs_runtime::Event;
-                        match event {
-                            Event::NodeStarted { id, kind } => {
-                                runs.node_started(&run_id, &id, &kind)
+                    .run(
+                        &canvas_path,
+                        &target,
+                        approve_egress,
+                        &cancel,
+                        &mut |event| {
+                            use arc_labs_runtime::Event;
+                            match event {
+                                Event::NodeStarted { id, kind } => {
+                                    runs.node_started(&run_id, &id, &kind)
+                                }
+                                Event::Token { id, text } => runs.token(&run_id, &id, &text),
+                                Event::NodeFinished { id, output, cost } => {
+                                    runs.node_finished(&run_id, &id, &output, cost)
+                                }
+                                Event::Egress { destination, bytes } => {
+                                    runs.egress(&run_id, &destination, bytes)
+                                }
                             }
-                            Event::Token { id, text } => runs.token(&run_id, &id, &text),
-                            Event::NodeFinished { id, output, cost } => {
-                                runs.node_finished(&run_id, &id, &output, cost)
-                            }
-                            Event::Egress { destination, bytes } => {
-                                runs.egress(&run_id, &destination, bytes)
-                            }
-                        }
-                    })
+                        },
+                    )
                     .map_err(|e| e.to_string())
             })();
 
@@ -451,7 +490,10 @@ impl Api {
         if self.runs.cancel(id) {
             Ok(())
         } else {
-            Err(ApiError::new(ErrorCode::NoteNotFound, format!("no run {id}")))
+            Err(ApiError::new(
+                ErrorCode::NoteNotFound,
+                format!("no run {id}"),
+            ))
         }
     }
 
@@ -460,8 +502,7 @@ impl Api {
     /// Read a canvas, with each card's authorship resolved from the ledger.
     pub fn read_canvas(&self, path: &VaultPath) -> ApiResult<CanvasView> {
         let source = self.with_vault(|v| Ok(v.read_note(path)?))?;
-        let canvas =
-            arc_labs_canvas::Canvas::parse(source.text()).map_err(canvas_err)?;
+        let canvas = arc_labs_canvas::Canvas::parse(source.text()).map_err(canvas_err)?;
         let ledger = self.ledger().ok();
 
         let nodes = canvas
@@ -522,7 +563,11 @@ impl Api {
                 from_side: e.from_side().map(str::to_string),
                 to_side: e.to_side().map(str::to_string),
                 label: e.label().map(str::to_string),
-                color: e.as_map().get("color").and_then(|v| v.as_str()).map(str::to_string),
+                color: e
+                    .as_map()
+                    .get("color")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
             })
             .collect();
 
@@ -545,11 +590,12 @@ impl Api {
         moves: &[NodeGeometry],
     ) -> ApiResult<SaveResult> {
         let source = self.with_vault(|v| Ok(v.read_note(path)?))?;
-        let mut canvas =
-            arc_labs_canvas::Canvas::parse(source.text()).map_err(canvas_err)?;
+        let mut canvas = arc_labs_canvas::Canvas::parse(source.text()).map_err(canvas_err)?;
 
         for m in moves {
-            let Some(node) = canvas.node_mut(&m.id) else { continue };
+            let Some(node) = canvas.node_mut(&m.id) else {
+                continue;
+            };
             node.set_position(m.x, m.y);
             if let (Some(w), Some(h)) = (m.width, m.height) {
                 node.set_size(w, h);
@@ -586,14 +632,22 @@ impl Api {
     /// Who the current user is, for attribution.
     fn human(&self) -> arc_labs_ledger::Actor {
         arc_labs_ledger::Actor::human(
-            self.state.read().expect("state lock poisoned").config.resolved_actor_id(),
+            self.state
+                .read()
+                .expect("state lock poisoned")
+                .config
+                .resolved_actor_id(),
         )
     }
 
     /// A note's history, oldest first.
     pub fn timeline(&self, path: &VaultPath) -> ApiResult<Vec<TimelineEntry>> {
         let entries = self.ledger()?.read(path).map_err(ledger_err)?;
-        Ok(entries.iter().enumerate().map(|(i, e)| to_timeline(i, e)).collect())
+        Ok(entries
+            .iter()
+            .enumerate()
+            .map(|(i, e)| to_timeline(i, e))
+            .collect())
     }
 
     /// Proposals on a note that have not been accepted or rejected.
@@ -635,9 +689,9 @@ impl Api {
     pub fn entry_diff(&self, path: &VaultPath, index: usize) -> ApiResult<EntryDiff> {
         let ledger = self.ledger()?;
         let entries = ledger.read(path).map_err(ledger_err)?;
-        let entry = entries.get(index).ok_or_else(|| {
-            ApiError::new(ErrorCode::NoteNotFound, format!("no entry {index}"))
-        })?;
+        let entry = entries
+            .get(index)
+            .ok_or_else(|| ApiError::new(ErrorCode::NoteNotFound, format!("no entry {index}")))?;
         Ok(EntryDiff {
             index,
             patch: entry.patch.clone().unwrap_or_default(),
@@ -712,9 +766,12 @@ impl Api {
     pub fn accept(&self, path: &VaultPath, index: usize) -> ApiResult<SaveResult> {
         let ledger = self.ledger()?;
         let entries = ledger.read(path).map_err(ledger_err)?;
-        let entry = entries.get(index).filter(|e| e.op == arc_labs_ledger::Op::Propose).ok_or_else(
-            || ApiError::new(ErrorCode::NoteNotFound, format!("no proposal at {index}")),
-        )?;
+        let entry = entries
+            .get(index)
+            .filter(|e| e.op == arc_labs_ledger::Op::Propose)
+            .ok_or_else(|| {
+                ApiError::new(ErrorCode::NoteNotFound, format!("no proposal at {index}"))
+            })?;
         let proposed = ledger
             .objects()
             .get(entry.after.as_deref().unwrap_or_default())
@@ -724,14 +781,24 @@ impl Api {
         let saved = self.with_vault(|v| Ok(v.write_note(path, &current, &proposed)?))?;
 
         // Attributed to the agent that proposed it, because that is who wrote
-        // the words — with the acceptance itself recorded as the reason.
+        // the words. Constraint 6 wants a stranger to see blue wherever an agent
+        // has been, and colouring this entry amber because a person clicked
+        // Accept would hide exactly the thing the timeline exists to show.
+        //
+        // *Who* accepted goes in the reason. It matters on a shared vault, and
+        // the ledger already carries one actor per entry — that slot is spoken
+        // for by the author of the text.
         let mut actor = entry.actor.clone();
         actor.session = entry.actor.session.clone();
+        let accepted_by = self.human().id;
         ledger
             .record_accept(
                 path,
                 actor,
-                format!("accepted proposal {index}: {}", entry.reason),
+                format!(
+                    "accepted by {accepted_by} — proposal {index}: {}",
+                    entry.reason
+                ),
                 current.text(),
                 &proposed,
             )
@@ -745,9 +812,12 @@ impl Api {
     pub fn reject(&self, path: &VaultPath, index: usize) -> ApiResult<()> {
         let ledger = self.ledger()?;
         let entries = ledger.read(path).map_err(ledger_err)?;
-        let entry = entries.get(index).filter(|e| e.op == arc_labs_ledger::Op::Propose).ok_or_else(
-            || ApiError::new(ErrorCode::NoteNotFound, format!("no proposal at {index}")),
-        )?;
+        let entry = entries
+            .get(index)
+            .filter(|e| e.op == arc_labs_ledger::Op::Propose)
+            .ok_or_else(|| {
+                ApiError::new(ErrorCode::NoteNotFound, format!("no proposal at {index}"))
+            })?;
         let proposed = ledger
             .objects()
             .get(entry.after.as_deref().unwrap_or_default())
@@ -881,8 +951,12 @@ impl Api {
         let dir = dunce_canonicalize(&dir)?;
 
         let mut entries = Vec::new();
-        let read = std::fs::read_dir(&dir)
-            .map_err(|e| ApiError::new(ErrorCode::Io, format!("cannot list directory: {}", e.kind())))?;
+        let read = std::fs::read_dir(&dir).map_err(|e| {
+            ApiError::new(
+                ErrorCode::Io,
+                format!("cannot list directory: {}", e.kind()),
+            )
+        })?;
         for entry in read.flatten() {
             if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                 continue;
@@ -912,7 +986,10 @@ impl Api {
 fn canvas_err(e: arc_labs_canvas::CanvasError) -> ApiError {
     // A malformed canvas is the user's file, not an internal fault, so the
     // message says what is wrong with it rather than hiding behind "io error".
-    ApiError::new(ErrorCode::NotUtf8, format!("this canvas could not be read: {e}"))
+    ApiError::new(
+        ErrorCode::NotUtf8,
+        format!("this canvas could not be read: {e}"),
+    )
 }
 
 fn ledger_err(e: arc_labs_ledger::LedgerError) -> ApiError {
@@ -923,8 +1000,16 @@ fn ledger_err(e: arc_labs_ledger::LedgerError) -> ApiError {
 fn save_result(saved: arc_labs_core::Saved, content: &str) -> SaveResult {
     let hash = arc_labs_ledger::hash_of(content);
     match saved {
-        arc_labs_core::Saved::Written { bytes } => SaveResult { written: true, bytes, hash },
-        arc_labs_core::Saved::Unchanged => SaveResult { written: false, bytes: 0, hash },
+        arc_labs_core::Saved::Written { bytes } => SaveResult {
+            written: true,
+            bytes,
+            hash,
+        },
+        arc_labs_core::Saved::Unchanged => SaveResult {
+            written: false,
+            bytes: 0,
+            hash,
+        },
     }
 }
 
@@ -978,17 +1063,23 @@ fn index_err(e: arc_labs_index::IndexError) -> ApiError {
     // The full form can name the database path; the public form must not.
     tracing::debug!(error = %e, "index error");
     match e {
-        arc_labs_index::IndexError::SchemaMismatch { .. } => {
-            ApiError::new(ErrorCode::Config, "the index was built by a different version")
-        }
+        arc_labs_index::IndexError::SchemaMismatch { .. } => ApiError::new(
+            ErrorCode::Config,
+            "the index was built by a different version",
+        ),
         _ => ApiError::new(ErrorCode::Io, "the index could not be read"),
     }
 }
 
 fn dunce_canonicalize(p: &Path) -> ApiResult<PathBuf> {
     dunce::canonicalize(p).map_err(|e| match e.kind() {
-        std::io::ErrorKind::NotFound => ApiError::new(ErrorCode::VaultNotFound, "no such directory"),
-        _ => ApiError::new(ErrorCode::Io, format!("cannot open directory: {}", e.kind())),
+        std::io::ErrorKind::NotFound => {
+            ApiError::new(ErrorCode::VaultNotFound, "no such directory")
+        }
+        _ => ApiError::new(
+            ErrorCode::Io,
+            format!("cannot open directory: {}", e.kind()),
+        ),
     })
 }
 
@@ -1054,7 +1145,10 @@ mod tests {
         let (_t, api) = api_with_vault(Capabilities::desktop());
         let p = VaultPath::new("a.md").unwrap();
 
-        assert!(api.read_note(&p).unwrap().text.is_none(), "a render should not ship the source");
+        assert!(
+            api.read_note(&p).unwrap().text.is_none(),
+            "a render should not ship the source"
+        );
 
         let edit = api.read_note_for_edit(&p).unwrap();
         assert_eq!(edit.text.as_deref(), Some("# A\n\nlink to [[B]] #tag\n"));
@@ -1067,7 +1161,9 @@ mod tests {
         let p = VaultPath::new("a.md").unwrap();
         let note = api.read_note_for_edit(&p).unwrap();
 
-        let r = api.write_note(&p, note.text.as_deref().unwrap(), Some(&note.hash)).unwrap();
+        let r = api
+            .write_note(&p, note.text.as_deref().unwrap(), Some(&note.hash))
+            .unwrap();
         assert!(!r.written);
         assert_eq!(r.hash, note.hash);
     }
@@ -1078,12 +1174,16 @@ mod tests {
         let p = VaultPath::new("a.md").unwrap();
         let note = api.read_note_for_edit(&p).unwrap();
 
-        let r = api.write_note(&p, "# A changed\n", Some(&note.hash)).unwrap();
+        let r = api
+            .write_note(&p, "# A changed\n", Some(&note.hash))
+            .unwrap();
         assert!(r.written && r.bytes > 0);
         assert_ne!(r.hash, note.hash);
 
         // The returned hash is the right base for the next save.
-        assert!(api.write_note(&p, "# A changed again\n", Some(&r.hash)).is_ok());
+        assert!(api
+            .write_note(&p, "# A changed again\n", Some(&r.hash))
+            .is_ok());
     }
 
     #[test]
@@ -1095,7 +1195,9 @@ mod tests {
         // Someone else — Obsidian, Syncthing, git — writes to the same file.
         std::fs::write(tmp.path().join("a.md"), b"# written by someone else\n").unwrap();
 
-        let err = api.write_note(&p, "# my version\n", Some(&note.hash)).unwrap_err();
+        let err = api
+            .write_note(&p, "# my version\n", Some(&note.hash))
+            .unwrap_err();
         assert_eq!(err.code, ErrorCode::Conflict);
         // Their work is still there.
         assert_eq!(
@@ -1135,7 +1237,14 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(20));
 
         let proposal = api
-            .propose(&p, "weave", "qwen3.5:0.8b", "run-1", "rewrite the opening", "# Rewritten\n")
+            .propose(
+                &p,
+                "weave",
+                "qwen3.5:0.8b",
+                "run-1",
+                "rewrite the opening",
+                "# Rewritten\n",
+            )
             .unwrap();
 
         // Nothing on disk moved.
@@ -1157,7 +1266,10 @@ mod tests {
         // to the agent that wrote the words.
         api.accept(&p, proposal.index).unwrap();
         assert_eq!(std::fs::read(&file).unwrap(), b"# Rewritten\n");
-        assert!(api.proposals(&p).unwrap().is_empty(), "accepting should settle it");
+        assert!(
+            api.proposals(&p).unwrap().is_empty(),
+            "accepting should settle it"
+        );
 
         let t = api.timeline(&p).unwrap();
         assert_eq!(t[1].op, "accept");
@@ -1172,11 +1284,16 @@ mod tests {
         let file = tmp.path().join("a.md");
         let original = std::fs::read(&file).unwrap();
 
-        let proposal =
-            api.propose(&p, "weave", "m", "s", "a rewrite", "# Nobody wanted this\n").unwrap();
+        let proposal = api
+            .propose(&p, "weave", "m", "s", "a rewrite", "# Nobody wanted this\n")
+            .unwrap();
         api.reject(&p, proposal.index).unwrap();
 
-        assert_eq!(std::fs::read(&file).unwrap(), original, "reject must not write");
+        assert_eq!(
+            std::fs::read(&file).unwrap(),
+            original,
+            "reject must not write"
+        );
         assert!(api.proposals(&p).unwrap().is_empty());
 
         // The refusal is history too: an audit that shows only accepted changes
@@ -1196,11 +1313,17 @@ mod tests {
 
         let r1 = api.write_note(&p, "# second\n", Some(&v0.hash)).unwrap();
         api.write_note(&p, "# third\n", Some(&r1.hash)).unwrap();
-        assert_eq!(api.read_note_for_edit(&p).unwrap().text.as_deref(), Some("# third\n"));
+        assert_eq!(
+            api.read_note_for_edit(&p).unwrap().text.as_deref(),
+            Some("# third\n")
+        );
 
         // Entry 0 is the first edit, whose `after` is "# second\n".
         api.restore(&p, 0).unwrap();
-        assert_eq!(api.read_note_for_edit(&p).unwrap().text.as_deref(), Some("# second\n"));
+        assert_eq!(
+            api.read_note_for_edit(&p).unwrap().text.as_deref(),
+            Some("# second\n")
+        );
 
         // The restore is itself on the timeline — an undo that erased its own
         // trace would be the one hole in the audit.
@@ -1239,7 +1362,11 @@ mod tests {
         let listing = api.browse(Some(tmp.path())).unwrap();
 
         let names: Vec<&str> = listing.entries.iter().map(|e| e.name.as_str()).collect();
-        assert_eq!(names, ["Notes"], "should list directories only, and no dotfiles");
+        assert_eq!(
+            names,
+            ["Notes"],
+            "should list directories only, and no dotfiles"
+        );
         assert!(listing.parent.is_some());
     }
 
@@ -1251,7 +1378,11 @@ mod tests {
 
         let api = Api::new(Config::default(), None, Capabilities::desktop());
         let listing = api.browse(Some(tmp.path())).unwrap();
-        let vault = listing.entries.iter().find(|e| e.name == "MyVault").unwrap();
+        let vault = listing
+            .entries
+            .iter()
+            .find(|e| e.name == "MyVault")
+            .unwrap();
         let plain = listing.entries.iter().find(|e| e.name == "Plain").unwrap();
         assert!(vault.is_vault);
         assert!(!plain.is_vault);
@@ -1260,7 +1391,10 @@ mod tests {
     #[test]
     fn startup_vault_resolution_prefers_the_explicit_flag() {
         let api = Api::new(
-            Config { vault: Some(PathBuf::from("/from-config")), ..Default::default() },
+            Config {
+                vault: Some(PathBuf::from("/from-config")),
+                ..Default::default()
+            },
             None,
             Capabilities::desktop(),
         );
@@ -1268,14 +1402,23 @@ mod tests {
             api.resolve_startup_vault(Some(PathBuf::from("/from-flag"))),
             Some(PathBuf::from("/from-flag"))
         );
-        assert_eq!(api.resolve_startup_vault(None), Some(PathBuf::from("/from-config")));
+        assert_eq!(
+            api.resolve_startup_vault(None),
+            Some(PathBuf::from("/from-config"))
+        );
     }
 
     #[test]
     fn opening_a_missing_vault_is_a_clean_error() {
         let api = Api::new(Config::default(), None, Capabilities::desktop());
-        let err = api.open_vault(Path::new("/definitely/not/here")).unwrap_err();
+        let err = api
+            .open_vault(Path::new("/definitely/not/here"))
+            .unwrap_err();
         assert_eq!(err.code, ErrorCode::VaultNotFound);
-        assert!(!err.message.contains("definitely"), "echoed the path back: {}", err.message);
+        assert!(
+            !err.message.contains("definitely"),
+            "echoed the path back: {}",
+            err.message
+        );
     }
 }

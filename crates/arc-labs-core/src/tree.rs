@@ -24,7 +24,14 @@ use crate::path::{VaultPath, VaultRoot};
 /// user did not write it, and showing it invites editing it. `.arc` is ours and
 /// gets the same treatment. Everything else beginning with `.` is skipped for
 /// the same reason a file manager hides dotfiles.
-const SKIP_DIRS: &[&str] = &[".arc", ".obsidian", ".git", ".trash", ".stfolder", ".stversions"];
+const SKIP_DIRS: &[&str] = &[
+    ".arc",
+    ".obsidian",
+    ".git",
+    ".trash",
+    ".stfolder",
+    ".stversions",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TreeEntry {
@@ -72,8 +79,13 @@ pub fn scan(root: &VaultRoot) -> Result<Tree> {
             let a_dir = a.file_type().is_dir();
             let b_dir = b.file_type().is_dir();
             b_dir.cmp(&a_dir).then_with(|| {
-                let (an, bn) = (a.file_name().to_string_lossy(), b.file_name().to_string_lossy());
-                an.to_lowercase().cmp(&bn.to_lowercase()).then_with(|| an.cmp(&bn))
+                let (an, bn) = (
+                    a.file_name().to_string_lossy(),
+                    b.file_name().to_string_lossy(),
+                );
+                an.to_lowercase()
+                    .cmp(&bn.to_lowercase())
+                    .then_with(|| an.cmp(&bn))
             })
         })
         .into_iter()
@@ -93,7 +105,10 @@ pub fn scan(root: &VaultRoot) -> Result<Tree> {
             Ok(e) => e,
             Err(e) => {
                 tree.skipped.push(Skipped {
-                    path: e.path().map(|p| p.display().to_string()).unwrap_or_default(),
+                    path: e
+                        .path()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_default(),
                     reason: "could not be read".into(),
                 });
                 continue;
@@ -159,16 +174,32 @@ mod tests {
 
     #[test]
     fn scans_a_nested_vault_and_links_parents() {
-        let (_t, root) = build(&["a.md", "Daily/2026-09-02.md", "Daily/Sub/deep.md", "board.canvas"]);
+        let (_t, root) = build(&[
+            "a.md",
+            "Daily/2026-09-02.md",
+            "Daily/Sub/deep.md",
+            "board.canvas",
+        ]);
         let tree = scan(&root).unwrap();
 
         assert_eq!(tree.note_count, 3);
         assert_eq!(tree.canvas_count, 1);
 
-        let find = |p: &str| tree.entries.iter().position(|e| e.path.as_str() == p).unwrap();
+        let find = |p: &str| {
+            tree.entries
+                .iter()
+                .position(|e| e.path.as_str() == p)
+                .unwrap()
+        };
         let daily = find("Daily");
-        assert_eq!(tree.entries[find("Daily/2026-09-02.md")].parent, Some(daily));
-        assert_eq!(tree.entries[find("Daily/Sub/deep.md")].parent, Some(find("Daily/Sub")));
+        assert_eq!(
+            tree.entries[find("Daily/2026-09-02.md")].parent,
+            Some(daily)
+        );
+        assert_eq!(
+            tree.entries[find("Daily/Sub/deep.md")].parent,
+            Some(find("Daily/Sub"))
+        );
         assert_eq!(tree.entries[find("a.md")].parent, None);
 
         // Every parent index must be a real directory earlier in the list —
@@ -183,8 +214,13 @@ mod tests {
 
     #[test]
     fn skips_infrastructure_directories() {
-        let (_t, root) =
-            build(&["note.md", ".obsidian/app.json", ".git/config", ".arc/index.db", ".hidden/x.md"]);
+        let (_t, root) = build(&[
+            "note.md",
+            ".obsidian/app.json",
+            ".git/config",
+            ".arc/index.db",
+            ".hidden/x.md",
+        ]);
         let tree = scan(&root).unwrap();
         for e in &tree.entries {
             let p = e.path.as_str();

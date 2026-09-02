@@ -7,11 +7,13 @@ members = [
     "crates/arc-labs-ledger",
     "crates/arc-labs-canvas",
     "crates/arc-labs-runtime",
+    "crates/arc-labs-weave",
+    "crates/arc-labs-mcp",
     "crates/arc-labs-bootstrap",
     "crates/arc-labs-server",
     "crates/arc-labs-cli",
     "crates/arc-labs-app",
-    "xtask", "crates/arc-labs-index", "crates/arc-labs-ledger", "crates/arc-labs-canvas", "crates/arc-labs-runtime",
+    "xtask",
 ]
 
 [workspace.package]
@@ -32,6 +34,8 @@ arc-labs-index     = { path = "crates/arc-labs-index" }
 arc-labs-ledger    = { path = "crates/arc-labs-ledger" }
 arc-labs-canvas    = { path = "crates/arc-labs-canvas" }
 arc-labs-runtime   = { path = "crates/arc-labs-runtime" }
+arc-labs-weave     = { path = "crates/arc-labs-weave" }
+arc-labs-mcp       = { path = "crates/arc-labs-mcp" }
 arc-labs-bootstrap = { path = "crates/arc-labs-bootstrap" }
 arc-labs-server    = { path = "crates/arc-labs-server" }
 

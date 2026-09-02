@@ -64,11 +64,17 @@ impl Error {
     }
 
     pub(crate) fn io(path: impl Into<PathBuf>, source: std::io::Error) -> Self {
-        Error::Io { path: path.into(), source }
+        Error::Io {
+            path: path.into(),
+            source,
+        }
     }
 
     pub(crate) fn invalid(input: impl Into<String>, reason: &'static str) -> Self {
-        Error::InvalidVaultPath { input: input.into(), reason }
+        Error::InvalidVaultPath {
+            input: input.into(),
+            reason,
+        }
     }
 }
 
@@ -83,8 +89,14 @@ mod tests {
             Error::PathEscapesVault(secret.clone()),
             Error::VaultRootMissing(secret.clone()),
             Error::VaultRootNotDirectory(secret.clone()),
-            Error::Config { path: secret.clone(), reason: "bad key".into() },
-            Error::io(secret.clone(), std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+            Error::Config {
+                path: secret.clone(),
+                reason: "bad key".into(),
+            },
+            Error::io(
+                secret.clone(),
+                std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+            ),
         ];
         for e in errors {
             let public = e.public();

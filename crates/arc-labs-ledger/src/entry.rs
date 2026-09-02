@@ -35,10 +35,19 @@ pub enum ActorKind {
 
 impl Actor {
     pub fn human(id: impl Into<String>) -> Actor {
-        Actor { kind: ActorKind::Human, id: id.into(), model: None, session: None }
+        Actor {
+            kind: ActorKind::Human,
+            id: id.into(),
+            model: None,
+            session: None,
+        }
     }
 
-    pub fn agent(id: impl Into<String>, model: impl Into<String>, session: impl Into<String>) -> Actor {
+    pub fn agent(
+        id: impl Into<String>,
+        model: impl Into<String>,
+        session: impl Into<String>,
+    ) -> Actor {
         Actor {
             kind: ActorKind::Agent,
             id: id.into(),
@@ -78,7 +87,10 @@ impl Op {
     /// `propose` and `reject` never do. That is the whole of constraint 4, and
     /// having it as a function means no code path has to remember it.
     pub fn touches_file(self) -> bool {
-        matches!(self, Op::Create | Op::Edit | Op::Rename | Op::Delete | Op::Accept)
+        matches!(
+            self,
+            Op::Create | Op::Edit | Op::Rename | Op::Delete | Op::Accept
+        )
     }
 }
 
@@ -211,12 +223,9 @@ mod tests {
 
     #[test]
     fn a_human_entry_carries_no_model_or_session() {
-        let line = serde_json::to_string(&Entry::new(
-            Actor::human("mishal"),
-            Op::Edit,
-            "manual edit",
-        ))
-        .unwrap();
+        let line =
+            serde_json::to_string(&Entry::new(Actor::human("mishal"), Op::Edit, "manual edit"))
+                .unwrap();
         assert!(!line.contains("model"));
         assert!(!line.contains("session"));
     }

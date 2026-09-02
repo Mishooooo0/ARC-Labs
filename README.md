@@ -34,6 +34,13 @@ One engine, four shells. Pick the row that matches where you are.
 | **Linux headless** | `arc-labs serve --vault ~/notes` | a browser, somewhere |
 | **Docker** | `docker run -v ~/notes:/vault -p 7777:7777 arc-labs` | nothing |
 
+Two more, once a vault is open:
+
+| | Command |
+|---|---|
+| **Serve MCP to another agent** | `arc-labs mcp` (stdio) |
+| **Suggest links** | `arc-labs weave --once` |
+
 Not sure what this machine can do:
 
 ```bash
@@ -103,10 +110,10 @@ these has a mechanism.
 | **Files are the source of truth** | The SQLite index (Phase 2) is derived. Delete `.arc/index.db`, reopen, lose nothing — and that is a gate, not a claim. |
 | **Obsidian compatibility both ways** | The real vault in `fixtures/vaults/etron` is the oracle. `.canvas` files round-trip byte-for-byte, including Obsidian's unstable per-node key order. |
 | **Fully offline** | `arc-labs-core` has no network-capable dependency. Both shells set a CSP with `connect-src 'self'`, so the webview *refuses* rather than the code promising. |
-| **No silent agent writes** | Agent output is a proposal. There is no `note_write` MCP tool — only `note_propose`. |
+| **No silent agent writes** | Agent output is a proposal. The MCP server has no `note_write` tool — the operation does not exist. Audited against git by `cargo run -p xtask -- audit-agents`. |
 | **Immutable ledger** | Append-only JSONL per note; any note restores to any prior state. |
 | **Provenance visible without reading** | Amber is human, blue is agent, everywhere. `cargo xtask lint-tokens` fails the build if either colour is spent on decoration. |
-| **Never fabricate relationships** | A real link and an inferred one never share a visual register. Where resolution is unknown, the API returns `null` rather than a guess. |
+| **Never fabricate relationships** | Inferred links live in a different table, arrive over a different API type, and are drawn in a different register — dashed, dimmer, scored, and naming the model. Where resolution is unknown, the API returns `null` rather than a guess. |
 
 Two more that fall out of having a server shell:
 
@@ -160,6 +167,95 @@ for four reasons that together are the design:
 
 ---
 
+## Other agents, and the daemon
+
+Two things a notebook does not usually have. Both are opt-in, and both are built
+so that the vault cannot be changed behind your back.
+
+### The MCP server — there is no tool that writes
+
+```bash
+arc-labs mcp                 # stdio, for Claude Desktop and friends
+arc-labs serve               # the same tools at POST /api/mcp
+```
+
+Seven tools: `vault_search`, `note_read`, `note_propose`, `link_suggest`,
+`canvas_read`, `canvas_run`, `ledger_read`.
+
+There is **no `note_write`**. Not "there is one but please don't", not "there is
+one behind a flag" — the operation does not exist, so an agent on the other end
+of the protocol cannot change a file no matter what it decides to do. Its output
+lands as a proposal in the ledger and waits for a person. Asking for
+`note_write` anyway returns an explanation of what to use instead, because an
+agent that assumed the tool exists deserves a better answer than "unknown tool".
+
+Both transports call the same `handle()` over the same `arc-labs-api`, so the
+Docker container serves agents exactly what the desktop app does. There is no
+second implementation to drift.
+
+To check the guarantee rather than believe it:
+
+```bash
+cargo run -p xtask -- audit-agents --vault /path/to/a/copy --days 7
+```
+
+That spawns `arc-labs mcp` as a real subprocess, runs a week of agent traffic
+through a pipe, and then asks **git** — not the application — which files
+changed. Zero, out of hundreds of proposals. Then it accepts one as a person
+would, and git reports exactly that one file.
+
+### Weave — link suggestions, inside a budget
+
+Off by default. Embedding a whole vault is real work on your machine, and that
+is a thing to opt into rather than discover:
+
+```toml
+[weave]
+enabled = true
+threshold = 0.82      # cosine similarity; deliberately high
+cpu_fraction = 0.15   # a ceiling, and it cannot be raised
+interval_secs = 60
+```
+
+It embeds changed notes with `nomic-embed-text`, then proposes links between
+notes that are semantically close and *structurally unlinked*. Suggestions go to
+an inbox pane. They never go into a file, and they never go into the `links`
+table — they live in `suggested_links`, and no query joins the two. Constraint 7
+is a schema layout here, not a coding convention.
+
+**The budget is not a preference.** Phase 1's typing target outranks Weave
+completely, so:
+
+- **≤15% of one core**, averaged over a rolling 60-second window. `cpu_fraction`
+  may only make it stricter — a config file cannot raise it.
+- **Nothing within 2 seconds of a keystroke.** A pass mid-flight stops, and says
+  so on the inbox card.
+- **Hard stop** when the index write queue is backed up.
+- **Resumable.** Killing the app costs you at most the batch in flight.
+
+Three things that had to be got right for those to hold, each of which was wrong
+first:
+
+1. **A pass never sleeps while holding the index.** Weave takes the index lock
+   per SQL statement, never across the HTTP call to the embedding model. Holding
+   it for a whole pass meant every save queued behind a network round trip — and
+   on the server, saves run on the async runtime's workers, so enough of them
+   blocked the *entire process*. The duty cycle, whose only job is protecting the
+   editor, was the thing stalling it.
+2. **The budget refuses work; it does not merely ask nicely.** A pass that has
+   not been paid for cannot start. Relying on the daemon to sleep off its own
+   debt worked until the "look now" button existed, at which point two passes
+   landed in the same minute for 29% of a core.
+3. **The window rolls; it does not reset.** A counter cleared every 60 seconds
+   reports more work than elapsed time when sampled just after a burst — the
+   status line said "133% of a core" while the daemon sat exactly on 15%.
+
+Accepting a suggestion writes two ledger entries, not one: Weave proposed it, and
+you accepted. Both stay blue, because a model wrote the words; *who* accepted is
+in the reason, which is the question that matters on a shared vault.
+
+---
+
 ## Crate map
 
 Strict one-way fan-out. Nothing depends sideways.
@@ -173,7 +269,9 @@ Strict one-way fan-out. Nothing depends sideways.
 | `arc-labs-cli` | Composition root: `serve`, `doctor`, `setup`. |
 | `arc-labs-app` | Tauri desktop shell. Commands only. |
 | `xtask` | Fixture generation, token lint, fidelity manifests. Not shipped. |
-| `arc-labs-index` · `-ledger` · `-canvas` · `-runtime` · `-weave` · `-mcp` | Phases 2–6. |
+| `arc-labs-weave` | The background daemon: embeddings, link suggestions, and the budget that outranks them. |
+| `arc-labs-mcp` | MCP over stdio and HTTP. Seven tools, none of which writes. |
+| `arc-labs-index` · `-ledger` · `-canvas` · `-runtime` | Phases 2–5. |
 
 Two types in `arc-labs-core` carry more weight than their size suggests:
 
@@ -200,7 +298,7 @@ byte-identical" achievable rather than aspirational.
 | 3 | Ledger | 50 mixed mutations, restore to state #17 exactly; a stranger spots agent activity in a screenshot |
 | 4 | Canvas | 300 nodes at 60 fps; real `.canvas` fixtures round-trip byte-identical |
 | 5 | Runtime | A four-node pipeline runs offline; cancel mid-stream leaves the note byte-identical |
-| 6 | Bridge & Weave | A week of agent activity shows zero file changes without a matching accepted ledger entry |
+| 6 | Bridge & Weave | A week of agent activity shows zero file changes without a matching accepted ledger entry; typing p99 stays under 16 ms with Weave live on 5,000 notes |
 | 7 | Ship | Installers and image run on a clean machine with no toolchain |
 
 ---

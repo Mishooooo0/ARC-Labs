@@ -106,6 +106,7 @@ dependencies = [
  "arc-labs-index",
  "arc-labs-ledger",
  "arc-labs-runtime",
+ "arc-labs-weave",
  "async-trait",
  "dunce",
  "serde",
@@ -123,6 +124,7 @@ dependencies = [
  "arc-labs-api",
  "arc-labs-core",
  "arc-labs-index",
+ "arc-labs-weave",
  "serde",
  "serde_json",
  "tauri",
@@ -166,7 +168,9 @@ dependencies = [
  "arc-labs-bootstrap",
  "arc-labs-core",
  "arc-labs-index",
+ "arc-labs-mcp",
  "arc-labs-server",
+ "arc-labs-weave",
  "clap",
  "tokio",
  "tracing",
@@ -219,6 +223,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "arc-labs-mcp"
+version = "0.1.0"
+dependencies = [
+ "arc-labs-api",
+ "arc-labs-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tracing",
+]
+
+[[package]]
 name = "arc-labs-runtime"
 version = "0.1.0"
 dependencies = [
@@ -242,6 +259,8 @@ dependencies = [
  "arc-labs-api",
  "arc-labs-core",
  "arc-labs-index",
+ "arc-labs-mcp",
+ "arc-labs-weave",
  "axum",
  "getrandom 0.4.3",
  "serde",
@@ -249,6 +268,21 @@ dependencies = [
  "tempfile",
  "tokio",
  "tower-http 0.7.1",
+ "tracing",
+]
+
+[[package]]
+name = "arc-labs-weave"
+version = "0.1.0"
+dependencies = [
+ "arc-labs-core",
+ "arc-labs-index",
+ "arc-labs-runtime",
+ "blake3",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
  "tracing",
 ]
 
@@ -5626,8 +5660,10 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arc-labs-api",
  "arc-labs-core",
  "arc-labs-index",
+ "arc-labs-ledger",
  "blake3",
  "clap",
  "serde_json",

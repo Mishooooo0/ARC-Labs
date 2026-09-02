@@ -26,7 +26,10 @@ pub struct Split<'a> {
 /// A `---` anywhere else is a thematic break or a setext heading underline and
 /// is left for the markdown parser, which is what Obsidian does too.
 pub fn split(text: &str) -> Split<'_> {
-    let none = Split { frontmatter: None, body: text };
+    let none = Split {
+        frontmatter: None,
+        body: text,
+    };
 
     let Some(rest) = text.strip_prefix("---") else {
         return none;
@@ -45,7 +48,10 @@ pub fn split(text: &str) -> Split<'_> {
         if trimmed == "---" || trimmed == "..." {
             let yaml = &rest[..offset];
             let body_start = open_len + offset + line.len();
-            return Split { frontmatter: Some(yaml), body: &text[body_start..] };
+            return Split {
+                frontmatter: Some(yaml),
+                body: &text[body_start..],
+            };
         }
         offset += line.len();
     }
@@ -94,13 +100,25 @@ mod tests {
         // A YAML round-trip would reorder these keys and requote the value.
         let doc = "---\nzeta: 1\nalpha: 'quoted'\n# a comment\nmiddle: 2026-09-02\n---\nx";
         let s = split(doc);
-        assert_eq!(s.frontmatter, Some("zeta: 1\nalpha: 'quoted'\n# a comment\nmiddle: 2026-09-02\n"));
+        assert_eq!(
+            s.frontmatter,
+            Some("zeta: 1\nalpha: 'quoted'\n# a comment\nmiddle: 2026-09-02\n")
+        );
     }
 
     #[test]
     fn does_not_treat_a_thematic_break_as_frontmatter() {
-        for doc in ["----\nnot frontmatter\n", "--- title\nx\n", "text\n---\nmore\n", "---"] {
-            assert_eq!(split(doc).frontmatter, None, "misread {doc:?} as frontmatter");
+        for doc in [
+            "----\nnot frontmatter\n",
+            "--- title\nx\n",
+            "text\n---\nmore\n",
+            "---",
+        ] {
+            assert_eq!(
+                split(doc).frontmatter,
+                None,
+                "misread {doc:?} as frontmatter"
+            );
         }
     }
 

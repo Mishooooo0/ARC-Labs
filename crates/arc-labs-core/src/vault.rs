@@ -78,7 +78,9 @@ impl Vault {
     pub fn read_note(&self, path: &VaultPath) -> Result<NoteText> {
         let abs = self.root.resolve_existing(path)?;
         let bytes = std::fs::read(&abs).map_err(|e| Error::io(&abs, e))?;
-        NoteText::decode(&bytes).ok_or_else(|| Error::NotUtf8 { path: path.to_string() })
+        NoteText::decode(&bytes).ok_or_else(|| Error::NotUtf8 {
+            path: path.to_string(),
+        })
     }
 
     /// Read raw bytes — for `.canvas` and anything else that is not prose.
@@ -173,7 +175,9 @@ mod tests {
     #[test]
     fn a_missing_note_is_not_found_rather_than_an_io_error() {
         let (_t, v) = vault_with(&[("a.md", b"x")]);
-        let err = v.read_note(&VaultPath::new("nope.md").unwrap()).unwrap_err();
+        let err = v
+            .read_note(&VaultPath::new("nope.md").unwrap())
+            .unwrap_err();
         assert!(matches!(err, Error::NoteNotFound(_)), "got {err:?}");
         assert!(!v.exists(&VaultPath::new("nope.md").unwrap()));
     }
@@ -181,7 +185,9 @@ mod tests {
     #[test]
     fn non_utf8_is_reported_not_corrupted() {
         let (_t, v) = vault_with(&[("latin1.md", b"caf\xE9\n")]);
-        let err = v.read_note(&VaultPath::new("latin1.md").unwrap()).unwrap_err();
+        let err = v
+            .read_note(&VaultPath::new("latin1.md").unwrap())
+            .unwrap_err();
         assert!(matches!(err, Error::NotUtf8 { .. }), "got {err:?}");
     }
 
@@ -200,7 +206,10 @@ mod tests {
             ("mixed.md", b"# Title\r\nsecond\nthird\r\n"),
             ("no-trailing.md", b"# no newline at end"),
             ("empty.md", b""),
-            ("frontmatter.md", b"---\nzeta: 1\nalpha: 'q'  # comment\n---\n\n# Body\n"),
+            (
+                "frontmatter.md",
+                b"---\nzeta: 1\nalpha: 'q'  # comment\n---\n\n# Body\n",
+            ),
         ];
 
         let tmp = tempfile::tempdir().unwrap();
@@ -219,7 +228,11 @@ mod tests {
             assert_eq!(undone, note.text(), "the undo itself was lossy for {name}");
 
             let saved = v.write_note(&p, &note, &undone).unwrap();
-            assert_eq!(saved, Saved::Unchanged, "{name} was rewritten despite no net change");
+            assert_eq!(
+                saved,
+                Saved::Unchanged,
+                "{name} was rewritten despite no net change"
+            );
 
             let after = std::fs::read(tmp.path().join(name)).unwrap();
             assert_eq!(&after, original_bytes, "{name} changed on disk");
@@ -235,7 +248,10 @@ mod tests {
 
         let note = v.read_note(&p).unwrap();
         let edited = format!("{}added line\n", note.text());
-        assert!(matches!(v.write_note(&p, &note, &edited).unwrap(), Saved::Written { .. }));
+        assert!(matches!(
+            v.write_note(&p, &note, &edited).unwrap(),
+            Saved::Written { .. }
+        ));
 
         // The BOM survives and the new line uses CRLF like its neighbours.
         assert_eq!(
@@ -269,15 +285,24 @@ mod tests {
         let p = VaultPath::new("mixed.md").unwrap();
 
         let note = v.read_note(&p).unwrap();
-        assert!(note.fidelity().is_mixed(), "the mix must be detected and reportable");
+        assert!(
+            note.fidelity().is_mixed(),
+            "the mix must be detected and reportable"
+        );
 
         // No-op: byte-identical, nothing written.
-        assert_eq!(v.write_note(&p, &note, note.text()).unwrap(), Saved::Unchanged);
+        assert_eq!(
+            v.write_note(&p, &note, note.text()).unwrap(),
+            Saved::Unchanged
+        );
         assert_eq!(std::fs::read(&file).unwrap(), original);
 
         // Real edit: normalised to the dominant ending, which here is CRLF.
         let edited = format!("{}fourth\n", note.text());
-        assert!(matches!(v.write_note(&p, &note, &edited).unwrap(), Saved::Written { .. }));
+        assert!(matches!(
+            v.write_note(&p, &note, &edited).unwrap(),
+            Saved::Written { .. }
+        ));
         assert_eq!(
             std::fs::read(&file).unwrap(),
             b"# mixed\r\nsecond\r\nthird\r\nfourth\r\n",
@@ -299,8 +324,14 @@ mod tests {
         let note = v.read_note(&p).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(20));
 
-        assert_eq!(v.write_note(&p, &note, note.text()).unwrap(), Saved::Unchanged);
-        assert_eq!(std::fs::metadata(&file).unwrap().modified().unwrap(), before);
+        assert_eq!(
+            v.write_note(&p, &note, note.text()).unwrap(),
+            Saved::Unchanged
+        );
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().modified().unwrap(),
+            before
+        );
     }
 
     #[test]
@@ -329,7 +360,10 @@ mod tests {
         // prove the write path checks independently rather than relying on the
         // read having happened first.
         let note = NoteText::decode(b"# untouched\n").unwrap();
-        assert!(matches!(v.write_note(&p, &note, "# OVERWRITTEN\n"), Err(Error::PathEscapesVault(_))));
+        assert!(matches!(
+            v.write_note(&p, &note, "# OVERWRITTEN\n"),
+            Err(Error::PathEscapesVault(_))
+        ));
         assert_eq!(std::fs::read(&target).unwrap(), b"# untouched\n");
     }
 

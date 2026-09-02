@@ -7,24 +7,37 @@
    * gives up several thousand elements earlier than that while a main-thread
    * simulation would eat the frame budget the editor needs.
    *
-   * ## Only real edges are drawn
+   * ## Observed and inferred are two registers, and they never blur
    *
-   * Every line here is a `[[wikilink]]` someone wrote. Links that resolve to
+   * A solid grey line is a `[[wikilink]]` someone wrote. Links that resolve to
    * nothing are not drawn at all, because an edge to a note that does not exist
-   * would be a relationship the vault does not contain. When Phase 6 adds
-   * inferred edges they get a dashed, dimmer stroke and arrive in a separate
-   * field on the wire, so this renderer cannot draw one as though it were the
-   * other even by mistake.
+   * would be a relationship the vault does not contain.
+   *
+   * A dashed blue line is something Weave *guessed*. It arrives in a separate
+   * prop, of a different type, from a different table - this renderer could not
+   * confuse the two if it tried.
+   *
+   * The distinction has to survive **every zoom level**, so it is carried three
+   * ways at once: colour (agent blue vs. line grey), opacity, and a dash pattern
+   * expressed in *screen* pixels rather than graph units, so it neither
+   * disappears when zoomed out nor turns into a solid line when zoomed in. Any
+   * one of the three could be defeated by a colour-blind viewer, a small screen
+   * or a screenshot; all three together cannot.
    */
   import { onMount } from "svelte";
-  import type { GraphData } from "../lib/types";
+  import type { GraphData, LinkSuggestion } from "../lib/types";
   import GraphWorker from "../lib/graph.worker?worker";
 
-  let { data, selected, onopen }: {
+  let { data, selected, inferred = [], onopen }: {
     data: GraphData;
     selected: string | null;
+    /** Weave's guesses. A different type from `data.edges`, deliberately. */
+    inferred?: LinkSuggestion[];
     onopen: (path: string) => void;
   } = $props();
+
+  /** Inferred edges can be hidden. Observed ones cannot - they are the vault. */
+  let showInferred = $state(true);
 
   let canvas = $state<HTMLCanvasElement | null>(null);
   let host = $state<HTMLDivElement | null>(null);
@@ -50,6 +63,7 @@
       node: s.getPropertyValue("--arc-fg-dim").trim(),
       nodeHi: s.getPropertyValue("--arc-accent").trim(),
       canvasNode: s.getPropertyValue("--arc-fg-faint").trim(),
+      agent: s.getPropertyValue("--arc-agent").trim(),
       label: s.getPropertyValue("--arc-fg").trim(),
       bg: s.getPropertyValue("--arc-bg-0").trim(),
     };
@@ -90,6 +104,29 @@
     ctx.stroke();
     ctx.globalAlpha = 1;
 
+    // Inferred edges, in the agent register. Drawn after the observed ones so
+    // they are visible, and dimmer so they never dominate what is actually
+    // there.
+    if (showInferred && inferredEdges.length) {
+      ctx.strokeStyle = t.agent;
+      ctx.globalAlpha = 0.55;
+      ctx.lineWidth = 1.25 / scale;
+      // Dash lengths divided by scale, so the pattern is a constant number of
+      // *screen* pixels at any zoom. This is the part that makes the
+      // distinction survive zooming out to the whole vault.
+      ctx.setLineDash([4 / scale, 4 / scale]);
+      ctx.beginPath();
+      for (const e of inferredEdges) {
+        const a = e.source * 2;
+        const b = e.target * 2;
+        ctx.moveTo(positions[a]!, positions[a + 1]!);
+        ctx.lineTo(positions[b]!, positions[b + 1]!);
+      }
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 1;
+    }
+
     const selectedIdx = selected ? data.nodes.findIndex((n) => n.path === selected) : -1;
 
     for (let i = 0; i < data.nodes.length; i++) {
@@ -128,6 +165,34 @@
 
     ctx.restore();
   }
+
+  /**
+   * Suggestions resolved to node indices.
+   *
+   * A suggestion whose endpoints are not both in the graph is dropped rather
+   * than drawn at coordinate zero - which is what an unchecked lookup produces,
+   * and it looks like a real edge to somewhere.
+   */
+  const inferredEdges = $derived.by(() => {
+    if (!inferred.length) return [] as { source: number; target: number; score: number }[];
+    const index = new Map(data.nodes.map((n, i) => [n.path, i]));
+    const out: { source: number; target: number; score: number }[] = [];
+    for (const s of inferred) {
+      const a = index.get(s.srcPath);
+      const b = index.get(s.dstPath);
+      if (a === undefined || b === undefined) continue;
+      out.push({ source: a, target: b, score: s.score });
+    }
+    return out;
+  });
+
+  /** Suggestions touching the hovered note, so the score is reachable here too. */
+  const hoveredSuggestions = $derived.by(() => {
+    if (hovered === null || !inferred.length) return [] as LinkSuggestion[];
+    const path = data.nodes[hovered]?.path;
+    if (!path) return [];
+    return inferred.filter((s) => s.srcPath === path || s.dstPath === path);
+  });
 
   let painted = false;
 
@@ -295,10 +360,36 @@
 
   <div class="legend data">
     <span>{data.nodes.length.toLocaleString()} notes</span>
-    <span>{data.edges.length.toLocaleString()} links</span>
+    <span><span class="key observed" aria-hidden="true"></span
+      >{data.edges.length.toLocaleString()} links</span>
+
+    {#if inferredEdges.length}
+      <!-- A toggle rather than a caption: the surest way to know which lines are
+           guesses is to be able to switch them off and watch them go. -->
+      <button
+        class="key-toggle"
+        class:off={!showInferred}
+        onclick={() => {
+          showInferred = !showInferred;
+          schedule();
+        }}
+        title="Inferred, not observed. Click to hide."
+      >
+        <span class="key inferred" aria-hidden="true"></span>
+        {inferredEdges.length} suggested
+      </button>
+    {/if}
+
     {#if alpha > 0.02}<span class="settling">settling…</span>{/if}
     {#if hovered !== null}
       <span class="hover">{data.nodes[hovered]?.title}</span>
+      {#each hoveredSuggestions.slice(0, 3) as s (s.id)}
+        <!-- Score and model travel with the edge everywhere it appears. -->
+        <span class="hover-inferred">
+          ⇢ {s.srcPath === data.nodes[hovered]?.path ? s.dstTitle : s.srcTitle}
+          {s.score.toFixed(2)} · {s.model}
+        </span>
+      {/each}
     {/if}
   </div>
 </div>
@@ -329,6 +420,47 @@
     align-items: baseline;
     color: var(--arc-fg-faint);
     pointer-events: none;
+    flex-wrap: wrap;
+    max-width: calc(100% - var(--arc-space-8));
+  }
+  /* The swatches are the legend. They use the same three cues as the canvas:
+     colour, opacity, and solid-versus-dashed. */
+  .key {
+    display: inline-block;
+    width: 14px;
+    height: 0;
+    margin-right: 6px;
+    vertical-align: middle;
+  }
+  .key.observed {
+    border-top: 1px solid var(--arc-line-strong);
+  }
+  .key.inferred {
+    border-top: 1.5px dashed var(--arc-agent);
+    opacity: 0.7;
+  }
+  .key-toggle {
+    pointer-events: auto;
+    background: none;
+    border: 0;
+    padding: 0;
+    font: inherit;
+    color: var(--arc-agent);
+    cursor: pointer;
+  }
+  .key-toggle.off {
+    color: var(--arc-fg-faint);
+  }
+  .key-toggle.off .key.inferred {
+    border-top-color: var(--arc-fg-faint);
+  }
+  .hover-inferred {
+    color: var(--arc-agent);
+    opacity: 0.8;
+    max-width: 34ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .settling {
     color: var(--arc-accent-dim);

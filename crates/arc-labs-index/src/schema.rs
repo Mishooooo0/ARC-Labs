@@ -32,7 +32,7 @@ use crate::Result;
 /// There is no migration path and there does not need to be one: on a mismatch
 /// the index is deleted and rebuilt from the vault. That is the whole benefit of
 /// a cache that holds no irreplaceable state.
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 const DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS arc_meta (
@@ -126,11 +126,58 @@ CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
     path UNINDEXED,
     tokenize='unicode61 remove_diacritics 2'
 );
+
+-- ── Phase 6: inference ──────────────────────────────────────────────────────
+--
+-- Everything below this line is *inferred*. Everything above it is *observed*.
+-- They are separate tables, and no query joins across the line, because
+-- constraint 7 says a user must never have to click a connection to find out
+-- whether it is real. Keeping them apart in the schema is what makes an
+-- accidental blend impossible rather than merely discouraged.
+
+-- Note embeddings. `vec0` is the sqlite-vec virtual table, spiked in Phase 2.
+CREATE VIRTUAL TABLE IF NOT EXISTS note_vectors USING vec0(
+    note_id INTEGER PRIMARY KEY,
+    embedding float[768]
+);
+
+-- What has been embedded, and from which content. The hash is what makes Weave
+-- resumable and idempotent: a note whose content has not changed is skipped, so
+-- killing the daemon mid-batch costs at most the note it was working on.
+CREATE TABLE IF NOT EXISTS embed_state (
+    note_id     INTEGER PRIMARY KEY REFERENCES notes(id) ON DELETE CASCADE,
+    hash        TEXT NOT NULL,
+    model       TEXT NOT NULL,
+    dimensions  INTEGER NOT NULL,
+    embedded_at TEXT NOT NULL
+);
+
+-- Suggested links. **Never** the `links` table.
+--
+-- Each row carries its score and the model that produced it, because the spec
+-- requires an inferred edge to show its source and score wherever it appears.
+-- `state` records the user's decision so a dismissed suggestion does not come
+-- back on the next pass.
+CREATE TABLE IF NOT EXISTS suggested_links (
+    id         INTEGER PRIMARY KEY,
+    src        INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    dst        INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    score      REAL    NOT NULL,
+    model      TEXT    NOT NULL,
+    created_at TEXT    NOT NULL,
+    -- open | accepted | dismissed
+    state      TEXT    NOT NULL DEFAULT 'open',
+    UNIQUE(src, dst)
+);
+CREATE INDEX IF NOT EXISTS suggested_src   ON suggested_links(src);
+CREATE INDEX IF NOT EXISTS suggested_state ON suggested_links(state);
 "#;
 
 pub fn migrate(conn: &Connection) -> Result<()> {
     let found: Option<i64> = conn
-        .query_row("SELECT version FROM arc_meta WHERE id = 1", [], |r| r.get(0))
+        .query_row("SELECT version FROM arc_meta WHERE id = 1", [], |r| {
+            r.get(0)
+        })
         .ok();
 
     if let Some(v) = found {
@@ -138,7 +185,10 @@ pub fn migrate(conn: &Connection) -> Result<()> {
             // Not an error the caller must handle by hand: the index is a cache,
             // so the fix is always "throw it away and rebuild". The caller does
             // that by deleting the file and reopening.
-            return Err(crate::IndexError::SchemaMismatch { found: v, expected: SCHEMA_VERSION });
+            return Err(crate::IndexError::SchemaMismatch {
+                found: v,
+                expected: SCHEMA_VERSION,
+            });
         }
         return Ok(());
     }
@@ -167,7 +217,9 @@ mod tests {
         migrate(&conn).unwrap();
         migrate(&conn).unwrap();
 
-        let n: i64 = conn.query_row("SELECT count(*) FROM arc_meta", [], |r| r.get(0)).unwrap();
+        let n: i64 = conn
+            .query_row("SELECT count(*) FROM arc_meta", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(n, 1);
     }
 
@@ -175,11 +227,15 @@ mod tests {
     fn a_schema_from_the_future_is_refused_rather_than_used() {
         let conn = Connection::open_in_memory().unwrap();
         migrate(&conn).unwrap();
-        conn.execute("UPDATE arc_meta SET version = 99 WHERE id = 1", []).unwrap();
+        conn.execute("UPDATE arc_meta SET version = 99 WHERE id = 1", [])
+            .unwrap();
 
         assert!(matches!(
             migrate(&conn),
-            Err(crate::IndexError::SchemaMismatch { found: 99, expected: SCHEMA_VERSION })
+            Err(crate::IndexError::SchemaMismatch {
+                found: 99,
+                expected: SCHEMA_VERSION
+            })
         ));
     }
 

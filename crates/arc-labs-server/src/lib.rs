@@ -124,7 +124,10 @@ impl From<ApiError> for WebError {
 type WebResult<T> = Result<Json<T>, WebError>;
 
 pub fn router(api: Arc<Api>, cfg: &ServerConfig) -> Router {
-    let state = Arc::new(AppState { api, token: cfg.token.clone() });
+    let state = Arc::new(AppState {
+        api,
+        token: cfg.token.clone(),
+    });
 
     let index = cfg.ui_dir.join("index.html");
     // SPA fallback: unknown paths serve index.html so client-side routing works,
@@ -161,6 +164,12 @@ pub fn router(api: Arc<Api>, cfg: &ServerConfig) -> Router {
         .route("/graph", get(graph))
         .route("/index-stats", get(index_stats))
         .route("/recent", get(recent))
+        .route("/suggestions", get(suggestions))
+        .route("/suggestion/accept", post(accept_suggestion))
+        .route("/suggestion/dismiss", post(dismiss_suggestion))
+        .route("/weave/status", get(weave_status))
+        .route("/weave/pass", post(weave_pass))
+        .route("/mcp", post(mcp))
         .route("/browse", get(browse))
         .route("/vault/open", post(open_vault))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth))
@@ -205,7 +214,10 @@ async fn auth(
         Some(t) if constant_time_eq(t.as_bytes(), expected.as_bytes()) => next.run(req).await,
         _ => (
             StatusCode::UNAUTHORIZED,
-            Json(ApiError::new(ErrorCode::NotPermitted, "a valid token is required")),
+            Json(ApiError::new(
+                ErrorCode::NotPermitted,
+                "a valid token is required",
+            )),
         )
             .into_response(),
     }
@@ -258,11 +270,25 @@ struct SaveBody {
     base_hash: Option<String>,
 }
 
+/// Save a note.
+///
+/// On a blocking thread, unlike most handlers here, because this one is on the
+/// typing path and it is the one that actually went wrong: a save that stalls
+/// blocks an async worker, and enough stalled saves take the whole server down
+/// rather than just the editor. The stall it hit is fixed — Weave no longer
+/// holds the index across an embedding call — but a synchronous fsync belongs
+/// off the runtime's workers regardless.
 async fn save_note(
     State(s): State<Arc<AppState>>,
     Json(body): Json<SaveBody>,
 ) -> WebResult<arc_labs_api::SaveResult> {
-    Ok(Json(s.api.write_note(&body.path, &body.text, body.base_hash.as_deref())?))
+    let api = s.api.clone();
+    let saved = tokio::task::spawn_blocking(move || {
+        api.write_note(&body.path, &body.text, body.base_hash.as_deref())
+    })
+    .await
+    .map_err(|e| ApiError::new(ErrorCode::Io, e.to_string()))??;
+    Ok(Json(saved))
 }
 
 async fn runnability(
@@ -299,10 +325,7 @@ async fn run_status(
     Ok(Json(s.api.run_status(&q.id)?))
 }
 
-async fn cancel_run(
-    State(s): State<Arc<AppState>>,
-    Json(q): Json<RunQuery>,
-) -> WebResult<()> {
+async fn cancel_run(State(s): State<Arc<AppState>>, Json(q): Json<RunQuery>) -> WebResult<()> {
     Ok(Json(s.api.cancel_run(&q.id)?))
 }
 
@@ -389,7 +412,9 @@ async fn propose(
     State(s): State<Arc<AppState>>,
     Json(b): Json<ProposeBody>,
 ) -> WebResult<arc_labs_api::Proposal> {
-    Ok(Json(s.api.propose(&b.path, &b.agent, &b.model, &b.session, &b.reason, &b.content)?))
+    Ok(Json(s.api.propose(
+        &b.path, &b.agent, &b.model, &b.session, &b.reason, &b.content,
+    )?))
 }
 
 #[derive(Deserialize)]
@@ -445,9 +470,7 @@ async fn unresolved(
     Ok(Json(s.api.unresolved(q.limit)?))
 }
 
-async fn tags(
-    State(s): State<Arc<AppState>>,
-) -> WebResult<Vec<arc_labs_index::query::TagCount>> {
+async fn tags(State(s): State<Arc<AppState>>) -> WebResult<Vec<arc_labs_index::query::TagCount>> {
     Ok(Json(s.api.tags()?))
 }
 
@@ -456,6 +479,81 @@ async fn tag_notes(
     Query(q): Query<TextQuery>,
 ) -> WebResult<Vec<arc_labs_index::query::NoteRef>> {
     Ok(Json(s.api.notes_with_tag(&q.q)?))
+}
+
+// ---------------------------------------------------------------------------
+// Phase 6 — the inbox, and MCP over HTTP
+// ---------------------------------------------------------------------------
+
+async fn suggestions(
+    State(s): State<Arc<AppState>>,
+    Query(q): Query<TextQuery>,
+) -> WebResult<Vec<arc_labs_api::LinkSuggestion>> {
+    Ok(Json(s.api.suggestions(q.limit)?))
+}
+
+#[derive(Deserialize)]
+struct SuggestionQuery {
+    id: i64,
+}
+
+async fn accept_suggestion(
+    State(s): State<Arc<AppState>>,
+    Json(b): Json<SuggestionQuery>,
+) -> WebResult<arc_labs_api::SaveResult> {
+    Ok(Json(s.api.accept_suggestion(b.id)?))
+}
+
+async fn dismiss_suggestion(
+    State(s): State<Arc<AppState>>,
+    Json(b): Json<SuggestionQuery>,
+) -> WebResult<()> {
+    Ok(Json(s.api.dismiss_suggestion(b.id)?))
+}
+
+async fn weave_status(State(s): State<Arc<AppState>>) -> WebResult<arc_labs_api::WeaveStatus> {
+    Ok(Json(s.api.weave_status()?))
+}
+
+/// Run one bounded pass, on request.
+///
+/// The browser shell has no daemon of its own — the server owns that — so this
+/// is how a user in a browser says "look now" without waiting out an interval.
+async fn weave_pass(State(s): State<Arc<AppState>>) -> WebResult<arc_labs_weave::PassReport> {
+    let api = s.api.clone();
+    // A pass is bounded but not instant, and it is synchronous. Handing it to a
+    // blocking thread keeps it off the async runtime's worker, where it would
+    // stall every other request served by that worker.
+    let report = tokio::task::spawn_blocking(move || api.weave_pass())
+        .await
+        .map_err(|e| ApiError::new(ErrorCode::Io, e.to_string()))??;
+    Ok(Json(report))
+}
+
+/// MCP over HTTP: one JSON-RPC message per request.
+///
+/// The transport is different from stdio; the tools are identical, because both
+/// call the same [`arc_labs_mcp::handle`]. That is the whole reason the Docker
+/// container can serve agents the desktop app serves — there is no second
+/// implementation to drift.
+///
+/// It sits behind the same bearer-token middleware as everything else under
+/// `/api`, so a non-loopback bind does not hand an anonymous agent the vault.
+async fn mcp(
+    State(s): State<Arc<AppState>>,
+    body: String,
+) -> Result<axum::response::Response, WebError> {
+    use axum::response::IntoResponse;
+    let api = s.api.clone();
+    let reply = tokio::task::spawn_blocking(move || arc_labs_mcp::handle(&api, &body))
+        .await
+        .map_err(|e| ApiError::new(ErrorCode::Io, e.to_string()))?;
+
+    Ok(match reply {
+        Some(text) => ([(header::CONTENT_TYPE, "application/json")], text).into_response(),
+        // A notification. By the spec it gets no body.
+        None => StatusCode::ACCEPTED.into_response(),
+    })
 }
 
 async fn graph(State(s): State<Arc<AppState>>) -> WebResult<arc_labs_index::query::Graph> {
@@ -477,7 +575,9 @@ async fn browse(
     State(s): State<Arc<AppState>>,
     Query(q): Query<BrowseQuery>,
 ) -> WebResult<arc_labs_api::DirListing> {
-    Ok(Json(s.api.browse(q.path.as_deref().map(std::path::Path::new))?))
+    Ok(Json(
+        s.api.browse(q.path.as_deref().map(std::path::Path::new))?,
+    ))
 }
 
 #[derive(Deserialize)]
@@ -515,7 +615,12 @@ mod tests {
     use std::net::Ipv4Addr;
 
     fn cfg(host: IpAddr, token: Option<String>) -> ServerConfig {
-        ServerConfig { host, port: 0, ui_dir: PathBuf::from("ui/dist"), token }
+        ServerConfig {
+            host,
+            port: 0,
+            ui_dir: PathBuf::from("ui/dist"),
+            token,
+        }
     }
 
     #[test]
@@ -557,11 +662,17 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("ok.md"), b"# ok\n").unwrap();
 
-        let api = Arc::new(Api::new(Config::default(), None, Capabilities::local_server()));
+        let api = Arc::new(Api::new(
+            Config::default(),
+            None,
+            Capabilities::local_server(),
+        ));
         api.open_vault(tmp.path()).unwrap();
 
         let app = router(api, &cfg(IpAddr::V4(Ipv4Addr::LOCALHOST), None));
-        let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await });
 
@@ -584,7 +695,11 @@ mod tests {
             }
             assert_eq!(code, "200", "a legitimate note should be served");
         }
-        for attack in ["..%2F..%2Fetc%2Fpasswd", "%2Fetc%2Fshadow", "C%3A%5CWindows%5Cwin.ini"] {
+        for attack in [
+            "..%2F..%2Fetc%2Fpasswd",
+            "%2Fetc%2Fshadow",
+            "C%3A%5CWindows%5Cwin.ini",
+        ] {
             if let Some(code) = get(attack).await {
                 assert_eq!(code, "400", "traversal {attack} was not rejected");
             }

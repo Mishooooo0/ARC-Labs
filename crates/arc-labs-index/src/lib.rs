@@ -25,6 +25,7 @@ use rusqlite::Connection;
 pub mod indexer;
 pub mod query;
 pub mod schema;
+pub mod vectors;
 
 pub use indexer::{build, BuildStats};
 pub use query::{Graph, IndexStats, NoteRef, SearchHit};
@@ -49,8 +50,10 @@ pub type Result<T> = std::result::Result<T, IndexError>;
 /// Open (or create) the index database at `path`.
 pub fn open(path: &Path) -> Result<Connection> {
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)
-            .map_err(|e| IndexError::Io { path: dir.to_path_buf(), source: e })?;
+        std::fs::create_dir_all(dir).map_err(|e| IndexError::Io {
+            path: dir.to_path_buf(),
+            source: e,
+        })?;
     }
     // Registering before the connection is opened is what makes vec0 available
     // to every connection this process creates, including ones opened later.
@@ -99,7 +102,10 @@ impl Index {
     }
 
     pub fn in_memory() -> Result<Index> {
-        Ok(Index { conn: open_in_memory()?, path: std::path::PathBuf::from(":memory:") })
+        Ok(Index {
+            conn: open_in_memory()?,
+            path: std::path::PathBuf::from(":memory:"),
+        })
     }
 
     pub fn path(&self) -> &Path {
@@ -157,6 +163,52 @@ impl Index {
     pub fn stats(&self) -> Result<query::IndexStats> {
         query::stats(&self.conn)
     }
+
+    // ── Inference (Phase 6) ─────────────────────────────────────────────────
+    //
+    // Deliberately a separate block. Everything above reports what the user
+    // wrote; everything below reports what a model guessed.
+
+    pub fn notes_needing_embedding(
+        &self,
+        model: &str,
+        dimensions: usize,
+    ) -> Result<Vec<vectors::Pending>> {
+        vectors::notes_needing_embedding(&self.conn, model, dimensions)
+    }
+    pub fn store_embedding(
+        &self,
+        note_id: i64,
+        vector: &[f32],
+        hash: &str,
+        model: &str,
+        dimensions: usize,
+    ) -> Result<()> {
+        vectors::store_embedding(&self.conn, note_id, vector, hash, model, dimensions)
+    }
+    pub fn nearest_unlinked(
+        &self,
+        per_note: usize,
+        threshold: f64,
+    ) -> Result<Vec<(i64, i64, f64)>> {
+        vectors::nearest_unlinked(&self.conn, per_note, threshold)
+    }
+    pub fn suggest_link(&self, src: i64, dst: i64, score: f64, model: &str) -> Result<bool> {
+        vectors::suggest_link(&self.conn, src, dst, score, model)
+    }
+    pub fn suggestions(&self, limit: usize) -> Result<Vec<vectors::SuggestionRow>> {
+        vectors::suggestions(&self.conn, limit)
+    }
+    #[allow(clippy::type_complexity)]
+    pub fn suggestions_detailed(&self, limit: usize) -> Result<Vec<vectors::SuggestionDetail>> {
+        vectors::suggestions_detailed(&self.conn, limit)
+    }
+    pub fn set_suggestion_state(&self, id: i64, state: &str) -> Result<()> {
+        vectors::set_suggestion_state(&self.conn, id, state)
+    }
+    pub fn embedding_progress(&self, model: &str, dimensions: usize) -> Result<(i64, i64)> {
+        vectors::embedding_progress(&self.conn, model, dimensions)
+    }
 }
 
 /// Remove a database and the files WAL mode keeps beside it.
@@ -202,9 +254,8 @@ fn register_vector_extension() {
             *mut *mut std::os::raw::c_char,
             *const rusqlite::ffi::sqlite3_api_routines,
         ) -> std::os::raw::c_int;
-        let init = std::mem::transmute::<*const (), ExtInit>(
-            sqlite_vec::sqlite3_vec_init as *const (),
-        );
+        let init =
+            std::mem::transmute::<*const (), ExtInit>(sqlite_vec::sqlite3_vec_init as *const ());
         rusqlite::ffi::sqlite3_auto_extension(Some(init));
     });
 }
@@ -236,12 +287,18 @@ mod tests {
         // here means a dependency bump that silently drops it fails a test
         // instead of failing search at runtime.
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("CREATE VIRTUAL TABLE t USING fts5(body);").expect("FTS5 missing");
-        conn.execute("INSERT INTO t(body) VALUES ('the ledger records provenance')", [])
-            .unwrap();
+        conn.execute_batch("CREATE VIRTUAL TABLE t USING fts5(body);")
+            .expect("FTS5 missing");
+        conn.execute(
+            "INSERT INTO t(body) VALUES ('the ledger records provenance')",
+            [],
+        )
+        .unwrap();
 
         let hit: String = conn
-            .query_row("SELECT body FROM t WHERE t MATCH 'provenance'", [], |r| r.get(0))
+            .query_row("SELECT body FROM t WHERE t MATCH 'provenance'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert!(hit.contains("provenance"));
     }
@@ -275,8 +332,9 @@ mod tests {
         register_vector_extension();
         let conn = Connection::open_in_memory().unwrap();
 
-        let version: String =
-            conn.query_row("SELECT vec_version()", [], |r| r.get(0)).expect("vec0 not loaded");
+        let version: String = conn
+            .query_row("SELECT vec_version()", [], |r| r.get(0))
+            .expect("vec0 not loaded");
         assert!(!version.is_empty());
 
         // nomic-embed-text is 768-dimensional; exercise the real width.
@@ -318,8 +376,11 @@ mod tests {
         let db = tmp.path().join(".arc").join("index.db");
         let conn = open(&db).unwrap();
 
-        let version: i64 =
-            conn.query_row("SELECT version FROM arc_meta WHERE id = 1", [], |r| r.get(0)).unwrap();
+        let version: i64 = conn
+            .query_row("SELECT version FROM arc_meta WHERE id = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         assert_eq!(version, SCHEMA_VERSION);
         assert!(db.exists(), "the parent directory should have been created");
     }

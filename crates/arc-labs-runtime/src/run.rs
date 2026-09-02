@@ -95,13 +95,26 @@ pub struct RunReport {
 /// What the caller is told while a run is in flight.
 #[derive(Debug, Clone)]
 pub enum Event {
-    NodeStarted { id: String, kind: String },
-    Token { id: String, text: String },
-    NodeFinished { id: String, output: String, cost: Option<RunCost> },
+    NodeStarted {
+        id: String,
+        kind: String,
+    },
+    Token {
+        id: String,
+        text: String,
+    },
+    NodeFinished {
+        id: String,
+        output: String,
+        cost: Option<RunCost>,
+    },
     /// Emitted immediately *after* the egress entry is written and *before* any
     /// byte is sent, so a surface can raise its in-flight indicator at the right
     /// moment rather than optimistically.
-    Egress { destination: String, bytes: u64 },
+    Egress {
+        destination: String,
+        bytes: u64,
+    },
 }
 
 pub struct Runner<'a> {
@@ -150,8 +163,7 @@ impl Runner<'_> {
             .vault
             .read_note(canvas_path)
             .map_err(|e| RunError::Other(e.public()))?;
-        let canvas =
-            Canvas::parse(source.text()).map_err(|e| RunError::Other(e.to_string()))?;
+        let canvas = Canvas::parse(source.text()).map_err(|e| RunError::Other(e.to_string()))?;
         let graph = Graph::from_canvas(&canvas);
 
         if !graph.is_executable(target) {
@@ -189,7 +201,9 @@ impl Runner<'_> {
                 continue;
             }
 
-            let Some(node) = graph.nodes.get(id) else { continue };
+            let Some(node) = graph.nodes.get(id) else {
+                continue;
+            };
             let inputs = self.inputs_for(&graph, id, &outputs);
             on_event(Event::NodeStarted {
                 id: id.clone(),
@@ -198,9 +212,7 @@ impl Runner<'_> {
 
             let (output, cost) = match node.kind {
                 ArcKind::Query => (self.run_query(node, &inputs)?, None),
-                ArcKind::Transform => {
-                    (Transform::parse(&node.text).apply(&inputs), None)
-                }
+                ArcKind::Transform => (Transform::parse(&node.text).apply(&inputs), None),
                 ArcKind::Prompt => {
                     let prompt = fill_slots(&node.text, &graph, id, &outputs, &inputs);
 
@@ -224,7 +236,8 @@ impl Runner<'_> {
                     }
 
                     let mut req = GenerateRequest::new(
-                        node.option_str("model").unwrap_or(&self.config.model.instruct),
+                        node.option_str("model")
+                            .unwrap_or(&self.config.model.instruct),
                         prompt,
                     );
                     req.temperature = node.option_f64("temperature").unwrap_or(0.0) as f32;
@@ -237,13 +250,12 @@ impl Runner<'_> {
                         req.max_tokens = n;
                     }
                     let id_for_tokens = id.clone();
-                    let generated =
-                        self.llm.generate(&req, cancel, &mut |t| {
-                            on_event(Event::Token {
-                                id: id_for_tokens.clone(),
-                                text: t.to_string(),
-                            })
-                        })?;
+                    let generated = self.llm.generate(&req, cancel, &mut |t| {
+                        on_event(Event::Token {
+                            id: id_for_tokens.clone(),
+                            text: t.to_string(),
+                        })
+                    })?;
                     total_tokens += generated.cost.tokens;
                     let text = if generated.thought_but_did_not_answer {
                         // Better than an empty card: say what happened and what
@@ -291,7 +303,8 @@ impl Runner<'_> {
     fn agent(&self, node: &crate::graph::RunNode) -> Actor {
         Actor::agent(
             "canvas",
-            node.option_str("model").unwrap_or(&self.config.model.instruct),
+            node.option_str("model")
+                .unwrap_or(&self.config.model.instruct),
             // The node id is in the session, so an entry names the card that
             // produced it and a run can be traced back to a point on a canvas.
             format!("{}#{}", self.session, node.id),
@@ -306,10 +319,16 @@ impl Runner<'_> {
     ) -> Vec<String> {
         // Sorted by node id, so a node with several inputs sees them in the same
         // order every run. The determinism gate depends on it.
-        let mut sources: Vec<&String> =
-            graph.inbound.get(id).map(|v| v.iter().collect()).unwrap_or_default();
+        let mut sources: Vec<&String> = graph
+            .inbound
+            .get(id)
+            .map(|v| v.iter().collect())
+            .unwrap_or_default();
         sources.sort();
-        sources.iter().filter_map(|s| outputs.get(*s).cloned()).collect()
+        sources
+            .iter()
+            .filter_map(|s| outputs.get(*s).cloned())
+            .collect()
     }
 
     fn run_query(&self, node: &crate::graph::RunNode, inputs: &[String]) -> Result<String> {
@@ -318,10 +337,16 @@ impl Runner<'_> {
         };
         // A query card can take its text from an upstream node, so a pipeline
         // can search for something it just computed.
-        let q = if node.text.trim().is_empty() { inputs.join(" ") } else { node.text.clone() };
+        let q = if node.text.trim().is_empty() {
+            inputs.join(" ")
+        } else {
+            node.text.clone()
+        };
         let limit = node.option_usize("limit").unwrap_or(10).min(100);
 
-        let hits = index.search(q.trim(), limit).map_err(|e| RunError::Other(e.to_string()))?;
+        let hits = index
+            .search(q.trim(), limit)
+            .map_err(|e| RunError::Other(e.to_string()))?;
         Ok(hits
             .iter()
             .map(|h| format!("## {}\n\n{}\n\n_{}_", h.title, h.snippet, h.path))
@@ -337,14 +362,23 @@ impl Runner<'_> {
         output: &str,
         node: &crate::graph::RunNode,
     ) -> Result<Option<String>> {
-        let mut targets: Vec<&String> =
-            graph.out.get(id).map(|v| v.iter().collect()).unwrap_or_default();
+        let mut targets: Vec<&String> = graph
+            .out
+            .get(id)
+            .map(|v| v.iter().collect())
+            .unwrap_or_default();
         targets.sort();
 
         for target_id in targets {
-            let Some(file) = graph.files.get(target_id) else { continue };
-            let Ok(path) = VaultPath::new(file) else { continue };
-            let Ok(current) = self.vault.read_note(&path) else { continue };
+            let Some(file) = graph.files.get(target_id) else {
+                continue;
+            };
+            let Ok(path) = VaultPath::new(file) else {
+                continue;
+            };
+            let Ok(current) = self.vault.read_note(&path) else {
+                continue;
+            };
 
             let mode = node.option_str("write").unwrap_or("append");
             let proposed = match mode {
@@ -399,7 +433,9 @@ pub fn fill_slots(
             Some(v.clone())
         } else {
             // Also allow naming an inbound edge by index: {{1}}.
-            name.parse::<usize>().ok().and_then(|i| inputs.get(i).cloned())
+            name.parse::<usize>()
+                .ok()
+                .and_then(|i| inputs.get(i).cloned())
         };
 
         match replacement {

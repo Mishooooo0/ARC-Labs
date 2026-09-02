@@ -34,7 +34,9 @@ pub struct ObjectStore {
 
 impl ObjectStore {
     pub fn new(arc_dir: &Path) -> ObjectStore {
-        ObjectStore { root: arc_dir.join("objects") }
+        ObjectStore {
+            root: arc_dir.join("objects"),
+        }
     }
 
     /// `blake3:abcdef…` -> `<root>/ab/cdef…`
@@ -96,7 +98,9 @@ impl ObjectStore {
     /// Total bytes held. For `doctor`, and for deciding when pruning is worth it.
     pub fn size_on_disk(&self) -> u64 {
         fn walk(dir: &Path) -> u64 {
-            let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return 0;
+            };
             entries
                 .flatten()
                 .map(|e| match e.file_type() {
@@ -153,9 +157,19 @@ mod tests {
     #[test]
     fn handles_the_awkward_content_a_vault_actually_holds() {
         let (_t, s) = store();
-        for content in ["", "\n", "no trailing newline", "unicode café ☕ 日本語", "\r\n\r\n"] {
+        for content in [
+            "",
+            "\n",
+            "no trailing newline",
+            "unicode café ☕ 日本語",
+            "\r\n\r\n",
+        ] {
             let h = s.put(content).unwrap();
-            assert_eq!(s.get(&h).unwrap(), content, "round trip failed for {content:?}");
+            assert_eq!(
+                s.get(&h).unwrap(),
+                content,
+                "round trip failed for {content:?}"
+            );
         }
     }
 
@@ -187,8 +201,18 @@ mod tests {
         let (_t, s) = store();
         // Each of these would be a path-traversal primitive if the hash were
         // used to build a path without checking.
-        for bad in ["", "ab", "../../etc/passwd", "blake3:../../x", "zz zz", "blake3:g0g0g0g0"] {
-            assert!(matches!(s.get(bad), Err(LedgerError::BadHash(_))), "accepted {bad:?}");
+        for bad in [
+            "",
+            "ab",
+            "../../etc/passwd",
+            "blake3:../../x",
+            "zz zz",
+            "blake3:g0g0g0g0",
+        ] {
+            assert!(
+                matches!(s.get(bad), Err(LedgerError::BadHash(_))),
+                "accepted {bad:?}"
+            );
         }
     }
 
@@ -197,6 +221,9 @@ mod tests {
         let (_t, s) = store();
         let h = s.put("x").unwrap();
         let hex = h.strip_prefix("blake3:").unwrap();
-        assert!(s.root.join(&hex[..2]).is_dir(), "expected two-character fanout");
+        assert!(
+            s.root.join(&hex[..2]).is_dir(),
+            "expected two-character fanout"
+        );
     }
 }

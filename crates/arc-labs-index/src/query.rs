@@ -172,7 +172,13 @@ pub fn to_fts_query(input: &str) -> Option<String> {
     let quoted: Vec<String> = terms
         .iter()
         .enumerate()
-        .map(|(i, t)| if i == last { format!("\"{t}\"*") } else { format!("\"{t}\"") })
+        .map(|(i, t)| {
+            if i == last {
+                format!("\"{t}\"*")
+            } else {
+                format!("\"{t}\"")
+            }
+        })
         .collect();
     Some(quoted.join(" AND "))
 }
@@ -193,7 +199,11 @@ pub fn search(conn: &Connection, input: &str, limit: usize) -> Result<Vec<Search
          LIMIT ?2",
     )?;
     let rows = stmt.query_map(params![q, limit as i64], |r| {
-        Ok(SearchHit { path: r.get(0)?, title: r.get(1)?, snippet: r.get(2)? })
+        Ok(SearchHit {
+            path: r.get(0)?,
+            title: r.get(1)?,
+            snippet: r.get(2)?,
+        })
     })?;
     Ok(rows.collect::<std::result::Result<_, _>>()?)
 }
@@ -224,7 +234,11 @@ pub fn quick_open(conn: &Connection, input: &str, limit: usize) -> Result<Vec<No
          LIMIT ?3",
     )?;
     let rows = stmt.query_map(params![like, needle, limit as i64], |r| {
-        Ok(NoteRef { path: r.get(0)?, title: r.get(1)?, is_canvas: r.get::<_, i64>(2)? != 0 })
+        Ok(NoteRef {
+            path: r.get(0)?,
+            title: r.get(1)?,
+            is_canvas: r.get::<_, i64>(2)? != 0,
+        })
     })?;
     Ok(rows.collect::<std::result::Result<_, _>>()?)
 }
@@ -235,7 +249,11 @@ pub fn recent(conn: &Connection, limit: usize) -> Result<Vec<NoteRef>> {
          ORDER BY mtime DESC LIMIT ?1",
     )?;
     let rows = stmt.query_map(params![limit as i64], |r| {
-        Ok(NoteRef { path: r.get(0)?, title: r.get(1)?, is_canvas: r.get::<_, i64>(2)? != 0 })
+        Ok(NoteRef {
+            path: r.get(0)?,
+            title: r.get(1)?,
+            is_canvas: r.get::<_, i64>(2)? != 0,
+        })
     })?;
     Ok(rows.collect::<std::result::Result<_, _>>()?)
 }
@@ -315,8 +333,12 @@ pub fn tag_counts(conn: &Connection) -> Result<Vec<TagCount>> {
         "SELECT name, count(*) AS n FROM tags
          GROUP BY name_folded ORDER BY n DESC, name",
     )?;
-    let rows =
-        stmt.query_map([], |r| Ok(TagCount { name: r.get(0)?, count: r.get(1)? }))?;
+    let rows = stmt.query_map([], |r| {
+        Ok(TagCount {
+            name: r.get(0)?,
+            count: r.get(1)?,
+        })
+    })?;
     Ok(rows.collect::<std::result::Result<_, _>>()?)
 }
 
@@ -327,7 +349,11 @@ pub fn notes_with_tag(conn: &Connection, tag: &str) -> Result<Vec<NoteRef>> {
          WHERE t.name_folded = ?1 ORDER BY n.path",
     )?;
     let rows = stmt.query_map(params![fold(tag)], |r| {
-        Ok(NoteRef { path: r.get(0)?, title: r.get(1)?, is_canvas: r.get::<_, i64>(2)? != 0 })
+        Ok(NoteRef {
+            path: r.get(0)?,
+            title: r.get(1)?,
+            is_canvas: r.get::<_, i64>(2)? != 0,
+        })
     })?;
     Ok(rows.collect::<std::result::Result<_, _>>()?)
 }
@@ -371,12 +397,22 @@ pub fn graph(conn: &Connection) -> Result<Graph> {
         let mut stmt =
             conn.prepare("SELECT path, COALESCE(title, stem), is_canvas FROM notes ORDER BY id")?;
         let rows = stmt.query_map([], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)? != 0))
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)? != 0,
+            ))
         })?;
         for (i, row) in rows.enumerate() {
             let (path, title, is_canvas) = row?;
             index.insert(path.clone(), i);
-            nodes.push(GraphNode { id: i, path, title, is_canvas, degree: 0 });
+            nodes.push(GraphNode {
+                id: i,
+                path,
+                title,
+                is_canvas,
+                degree: 0,
+            });
         }
     }
 
@@ -391,17 +427,21 @@ pub fn graph(conn: &Connection) -> Result<Graph> {
     let mut seen = std::collections::HashSet::new();
     {
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt
-            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
         for row in rows {
             let (from, to) = row?;
-            let (Some(&s), Some(&t)) = (index.get(&from), index.get(&to)) else { continue };
+            let (Some(&s), Some(&t)) = (index.get(&from), index.get(&to)) else {
+                continue;
+            };
             if s == t || !seen.insert((s, t)) {
                 continue;
             }
             nodes[s].degree += 1;
             nodes[t].degree += 1;
-            edges.push(GraphEdge { source: s, target: t });
+            edges.push(GraphEdge {
+                source: s,
+                target: t,
+            });
         }
     }
 
@@ -429,13 +469,20 @@ mod tests {
     #[test]
     fn search_returns_ranked_hits_with_snippets() {
         let (_t, c) = indexed(&[
-            ("a.md", "# Alpha\n\nThe ledger records provenance for every mutation.\n"),
+            (
+                "a.md",
+                "# Alpha\n\nThe ledger records provenance for every mutation.\n",
+            ),
             ("b.md", "# Beta\n\nNothing relevant here at all.\n"),
         ]);
         let hits = search(&c, "provenance", 10).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].path, "a.md");
-        assert!(hits[0].snippet.contains("«provenance»"), "got {}", hits[0].snippet);
+        assert!(
+            hits[0].snippet.contains("«provenance»"),
+            "got {}",
+            hits[0].snippet
+        );
     }
 
     #[test]
@@ -449,9 +496,15 @@ mod tests {
     fn hostile_search_input_cannot_produce_a_syntax_error() {
         // Every one of these is an FTS5 operator or a malformed expression.
         let (_t, c) = indexed(&[("a.md", "# A\n\nplain words here\n")]);
-        for input in ["\"", "a\"b", "NOT", "AND OR", "col:", "*", "(", "a AND (b", "^", "\"\"\""] {
+        for input in [
+            "\"", "a\"b", "NOT", "AND OR", "col:", "*", "(", "a AND (b", "^", "\"\"\"",
+        ] {
             let r = search(&c, input, 10);
-            assert!(r.is_ok(), "input {input:?} produced an error: {:?}", r.err());
+            assert!(
+                r.is_ok(),
+                "input {input:?} produced an error: {:?}",
+                r.err()
+            );
         }
         // Empty input is not an error, it is no results.
         assert!(search(&c, "   ", 10).unwrap().is_empty());
@@ -462,21 +515,29 @@ mod tests {
         let (_t, c) = indexed(&[
             ("target.md", "# Target\n"),
             ("a.md", "# A\n\nlink to [[target]]\n"),
-            ("b.md", "# B\n\nalso [[Target|the target]] and an embed ![[target]]\n"),
+            (
+                "b.md",
+                "# B\n\nalso [[Target|the target]] and an embed ![[target]]\n",
+            ),
             ("c.md", "# C\n\nno links\n"),
         ]);
         let back = backlinks(&c, "target.md").unwrap();
         assert_eq!(back.len(), 3, "{back:?}");
         assert!(back.iter().any(|b| b.path == "a.md"));
         assert!(back.iter().any(|b| b.is_embed));
-        assert!(back.iter().any(|b| b.alias.as_deref() == Some("the target")));
+        assert!(back
+            .iter()
+            .any(|b| b.alias.as_deref() == Some("the target")));
     }
 
     #[test]
     fn resolution_is_case_insensitive_and_handles_folders() {
         let (_t, c) = indexed(&[
             ("Daily/2026-09-02.md", "# Today\n"),
-            ("a.md", "# A\n\n[[2026-09-02]] and [[daily/2026-09-02]] and [[Daily/2026-09-02.md]]\n"),
+            (
+                "a.md",
+                "# A\n\n[[2026-09-02]] and [[daily/2026-09-02]] and [[Daily/2026-09-02.md]]\n",
+            ),
         ]);
         let out = outgoing(&c, "a.md").unwrap();
         assert_eq!(out.len(), 3);
@@ -557,7 +618,10 @@ mod tests {
             ("a/b/some-meeting-thing.md", "# Other\n"),
         ]);
         let hits = quick_open(&c, "meeting", 10).unwrap();
-        assert_eq!(hits[0].path, "notes/meeting.md", "exact stem should win: {hits:?}");
+        assert_eq!(
+            hits[0].path, "notes/meeting.md",
+            "exact stem should win: {hits:?}"
+        );
         assert_eq!(hits[1].path, "meeting-notes.md", "prefix next: {hits:?}");
         assert_eq!(hits.len(), 3);
     }

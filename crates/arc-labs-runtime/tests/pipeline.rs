@@ -19,7 +19,11 @@ fn fixture() -> (tempfile::TempDir, Vault, Ledger, arc_labs_index::Index) {
         b"# Source\n\nThe ledger records provenance for every mutation.\n",
     )
     .unwrap();
-    std::fs::write(tmp.path().join("target.md"), b"# Target\n\nExisting content.\n").unwrap();
+    std::fs::write(
+        tmp.path().join("target.md"),
+        b"# Target\n\nExisting content.\n",
+    )
+    .unwrap();
 
     let canvas = concat!(
         "{\n\t\"nodes\":[\n",
@@ -61,7 +65,10 @@ fn canvas_path() -> VaultPath {
 #[test]
 fn a_four_node_pipeline_runs_end_to_end_offline() {
     let (tmp, vault, ledger, index) = fixture();
-    let llm = MockLlm { chunks: 4, delay_ms: 0 };
+    let llm = MockLlm {
+        chunks: 4,
+        delay_ms: 0,
+    };
     let cfg = config("http://localhost:11434", ModelAccess::LocalOnly);
     let runner = Runner {
         vault: &vault,
@@ -103,8 +110,16 @@ fn a_four_node_pipeline_runs_end_to_end_offline() {
     assert_eq!(report.egress_to, None);
 
     // **Constraint 4**: the target note is untouched, mtime included.
-    assert_eq!(std::fs::read(&target).unwrap(), before, "the note was written to");
-    assert_eq!(std::fs::metadata(&target).unwrap().modified().unwrap(), mtime, "mtime moved");
+    assert_eq!(
+        std::fs::read(&target).unwrap(),
+        before,
+        "the note was written to"
+    );
+    assert_eq!(
+        std::fs::metadata(&target).unwrap().modified().unwrap(),
+        mtime,
+        "mtime moved"
+    );
 
     // The output arrived as a proposal, attributed to the model and the card.
     let target_path = VaultPath::new("target.md").unwrap();
@@ -114,7 +129,12 @@ fn a_four_node_pipeline_runs_end_to_end_offline() {
     assert!(entries[0].actor.is_agent(), "a pipeline writes as an agent");
     assert_eq!(entries[0].actor.model.as_deref(), Some("mock"));
     assert!(
-        entries[0].actor.session.as_deref().unwrap_or_default().contains("run-1#t"),
+        entries[0]
+            .actor
+            .session
+            .as_deref()
+            .unwrap_or_default()
+            .contains("run-1#t"),
         "the entry should name the run and the card, got {:?}",
         entries[0].actor.session
     );
@@ -124,7 +144,10 @@ fn a_four_node_pipeline_runs_end_to_end_offline() {
 #[test]
 fn every_run_records_its_cost() {
     let (_t, vault, ledger, index) = fixture();
-    let llm = MockLlm { chunks: 3, delay_ms: 1 };
+    let llm = MockLlm {
+        chunks: 3,
+        delay_ms: 1,
+    };
     let cfg = config("http://localhost:11434", ModelAccess::LocalOnly);
     let runner = Runner {
         vault: &vault,
@@ -135,19 +158,27 @@ fn every_run_records_its_cost() {
         session: "s".into(),
     };
 
-    let report = runner.run(&canvas_path(), "t", false, &Cancel::new(), &mut |_| {}).unwrap();
+    let report = runner
+        .run(&canvas_path(), "t", false, &Cancel::new(), &mut |_| {})
+        .unwrap();
     let prompt = report.results.iter().find(|r| r.kind == "prompt").unwrap();
     let cost = prompt.cost.expect("a prompt node must record its cost");
     assert!(cost.tokens > 0);
     assert!(cost.elapsed_ms > 0);
-    assert!(cost.tokens_per_sec > 0.0, "tok/s is not optional on this hardware");
+    assert!(
+        cost.tokens_per_sec > 0.0,
+        "tok/s is not optional on this hardware"
+    );
 }
 
 /// **The determinism gate.**
 #[test]
 fn the_same_graph_run_twice_produces_identical_output() {
     let (_t, vault, ledger, index) = fixture();
-    let llm = MockLlm { chunks: 3, delay_ms: 0 };
+    let llm = MockLlm {
+        chunks: 3,
+        delay_ms: 0,
+    };
     let cfg = config("http://localhost:11434", ModelAccess::LocalOnly);
     let runner = Runner {
         vault: &vault,
@@ -158,9 +189,13 @@ fn the_same_graph_run_twice_produces_identical_output() {
         session: "s".into(),
     };
 
-    let first = runner.run(&canvas_path(), "t", false, &Cancel::new(), &mut |_| {}).unwrap();
+    let first = runner
+        .run(&canvas_path(), "t", false, &Cancel::new(), &mut |_| {})
+        .unwrap();
     for _ in 0..8 {
-        let again = runner.run(&canvas_path(), "t", false, &Cancel::new(), &mut |_| {}).unwrap();
+        let again = runner
+            .run(&canvas_path(), "t", false, &Cancel::new(), &mut |_| {})
+            .unwrap();
         let a: Vec<&String> = first.results.iter().map(|r| &r.output).collect();
         let b: Vec<&String> = again.results.iter().map(|r| &r.output).collect();
         assert_eq!(a, b, "output varied between runs");
@@ -172,7 +207,10 @@ fn the_same_graph_run_twice_produces_identical_output() {
 #[test]
 fn cancelling_mid_stream_leaves_the_target_byte_identical() {
     let (tmp, vault, ledger, index) = fixture();
-    let llm = MockLlm { chunks: 60, delay_ms: 2 };
+    let llm = MockLlm {
+        chunks: 60,
+        delay_ms: 2,
+    };
     let cfg = config("http://localhost:11434", ModelAccess::LocalOnly);
     let runner = Runner {
         vault: &vault,
@@ -198,12 +236,22 @@ fn cancelling_mid_stream_leaves_the_target_byte_identical() {
         }
     });
 
-    assert!(matches!(result, Err(RunError::Llm(_))), "a cancelled run should error");
+    assert!(
+        matches!(result, Err(RunError::Llm(_))),
+        "a cancelled run should error"
+    );
     assert_eq!(std::fs::read(&target).unwrap(), before, "the note changed");
-    assert_eq!(std::fs::metadata(&target).unwrap().modified().unwrap(), mtime, "mtime moved");
+    assert_eq!(
+        std::fs::metadata(&target).unwrap().modified().unwrap(),
+        mtime,
+        "mtime moved"
+    );
     // No proposal: the run never reached the transform or the file card.
     assert!(
-        ledger.read(&VaultPath::new("target.md").unwrap()).unwrap().is_empty(),
+        ledger
+            .read(&VaultPath::new("target.md").unwrap())
+            .unwrap()
+            .is_empty(),
         "a cancelled run left a proposal behind"
     );
 }
@@ -224,7 +272,9 @@ fn local_only_blocks_a_remote_endpoint() {
         session: "s".into(),
     };
 
-    let err = runner.run(&canvas_path(), "t", false, &Cancel::new(), &mut |_| {}).unwrap_err();
+    let err = runner
+        .run(&canvas_path(), "t", false, &Cancel::new(), &mut |_| {})
+        .unwrap_err();
     assert!(matches!(err, RunError::EgressBlocked(_)), "got {err:?}");
     // Nothing ran, so nothing was recorded.
     assert!(ledger.read(&canvas_path()).unwrap().is_empty());
@@ -244,8 +294,13 @@ fn ask_each_run_refuses_until_approved_then_ledgers_the_egress() {
         session: "s".into(),
     };
 
-    let err = runner.run(&canvas_path(), "t", false, &Cancel::new(), &mut |_| {}).unwrap_err();
-    assert!(matches!(err, RunError::EgressNeedsApproval(_)), "got {err:?}");
+    let err = runner
+        .run(&canvas_path(), "t", false, &Cancel::new(), &mut |_| {})
+        .unwrap_err();
+    assert!(
+        matches!(err, RunError::EgressNeedsApproval(_)),
+        "got {err:?}"
+    );
 
     // Approved: it runs, and the egress is recorded.
     let mut announced: Option<(String, u64)> = None;
@@ -257,7 +312,10 @@ fn ask_each_run_refuses_until_approved_then_ledgers_the_egress() {
         })
         .unwrap();
 
-    assert_eq!(report.egress_to.as_deref(), Some("http://workstation.local:11434"));
+    assert_eq!(
+        report.egress_to.as_deref(),
+        Some("http://workstation.local:11434")
+    );
     let (dest, bytes) = announced.expect("the surface must be told before bytes leave");
     assert_eq!(dest, "http://workstation.local:11434");
     assert!(bytes > 0);
@@ -267,7 +325,10 @@ fn ask_each_run_refuses_until_approved_then_ledgers_the_egress() {
         .iter()
         .find(|e| e.op == arc_labs_ledger::Op::Egress)
         .expect("an egress entry must exist");
-    assert_eq!(egress.destination.as_deref(), Some("http://workstation.local:11434"));
+    assert_eq!(
+        egress.destination.as_deref(),
+        Some("http://workstation.local:11434")
+    );
     assert_eq!(egress.bytes, Some(bytes));
     assert!(!egress.op.touches_file());
 }
@@ -286,8 +347,13 @@ fn a_trusted_endpoint_runs_without_asking_but_is_still_ledgered() {
         session: "s".into(),
     };
 
-    let report = runner.run(&canvas_path(), "t", false, &Cancel::new(), &mut |_| {}).unwrap();
-    assert_eq!(report.egress_to.as_deref(), Some("http://192.168.1.50:11434"));
+    let report = runner
+        .run(&canvas_path(), "t", false, &Cancel::new(), &mut |_| {})
+        .unwrap();
+    assert_eq!(
+        report.egress_to.as_deref(),
+        Some("http://192.168.1.50:11434")
+    );
     // Trusted means "do not ask", never "do not record".
     assert!(ledger
         .read(&canvas_path())
@@ -310,7 +376,9 @@ fn a_local_run_records_no_egress_at_all() {
         session: "s".into(),
     };
 
-    runner.run(&canvas_path(), "t", false, &Cancel::new(), &mut |_| {}).unwrap();
+    runner
+        .run(&canvas_path(), "t", false, &Cancel::new(), &mut |_| {})
+        .unwrap();
     assert!(ledger
         .read(&canvas_path())
         .unwrap()
@@ -348,7 +416,13 @@ fn a_cycle_refuses_to_run_and_names_the_nodes() {
     };
 
     let err = runner
-        .run(&VaultPath::new("loop.canvas").unwrap(), "a", false, &Cancel::new(), &mut |_| {})
+        .run(
+            &VaultPath::new("loop.canvas").unwrap(),
+            "a",
+            false,
+            &Cancel::new(),
+            &mut |_| {},
+        )
         .unwrap_err();
     match err {
         RunError::Cycle(nodes) => assert_eq!(nodes, ["a", "b"]),
@@ -371,7 +445,9 @@ fn running_one_node_does_not_run_the_rest_of_the_canvas() {
     };
 
     // Target the query node: only it should run.
-    let report = runner.run(&canvas_path(), "q", false, &Cancel::new(), &mut |_| {}).unwrap();
+    let report = runner
+        .run(&canvas_path(), "q", false, &Cancel::new(), &mut |_| {})
+        .unwrap();
     assert_eq!(report.results.len(), 1);
     assert_eq!(report.results[0].kind, "query");
     assert_eq!(report.total_tokens, 0, "no model should have been called");

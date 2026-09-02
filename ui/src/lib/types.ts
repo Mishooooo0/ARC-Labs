@@ -326,3 +326,56 @@ export interface CanvasRunnability {
   cycle: string[];
   runnable: string[];
 }
+
+// ── Phase 6 — inferred, and it says so ──────────────────────────────────────
+
+/**
+ * A link ARC-LABS *thinks* might belong.
+ *
+ * Deliberately not shaped like {@link Link}. Constraint 7 says an inference must
+ * never be presented as an observation, and the cheapest way to hold that line
+ * is for the two to be different types — a component that draws real links
+ * cannot be handed one of these by accident, because it will not type-check.
+ * `score` and `model` are required for the same reason: an inferred edge carries
+ * its provenance everywhere it appears, or it does not appear.
+ */
+export interface LinkSuggestion {
+  id: number;
+  srcPath: string;
+  srcTitle: string;
+  dstPath: string;
+  dstTitle: string;
+  /** Cosine similarity, 0..1. */
+  score: number;
+  /** The embedding model that produced it. */
+  model: string;
+  createdAt: string;
+  /** Always true. Present so this cannot be mistaken for an observed link. */
+  inferred: true;
+}
+
+export interface PassReport {
+  embedded: number;
+  skippedUnchanged: number;
+  suggested: number;
+  /** Why the pass ended early: "UserActive", "QueueBacked", "Stopped". */
+  stoppedBecause?: string;
+  elapsedMs: number;
+  cpuFraction: number;
+  remaining: number;
+  /** How long the daemon must idle before working again, to stay in budget. */
+  owedMs: number;
+}
+
+export interface WeaveStatus {
+  running: boolean;
+  enabled: boolean;
+  model: string;
+  embedded: number;
+  total: number;
+  openSuggestions: number;
+  cpuFraction: number;
+  /** Seconds until the budget allows another pass. Zero means now. */
+  coolingSecs: number;
+  lastPass?: PassReport;
+}

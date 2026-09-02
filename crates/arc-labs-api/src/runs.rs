@@ -209,7 +209,10 @@ pub fn next_run_id() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
-    format!("{ms:013}-{:04}", COUNTER.fetch_add(1, Ordering::Relaxed) % 10_000)
+    format!(
+        "{ms:013}-{:04}",
+        COUNTER.fetch_add(1, Ordering::Relaxed) % 10_000
+    )
 }
 
 #[cfg(test)]
@@ -274,7 +277,12 @@ mod tests {
         let runs = Runs::new();
         runs.start("r1", "c", "n", Cancel::new());
         runs.cancel("r1");
-        runs.finish("r1", RunState::Failed, Some("the run was cancelled".into()), 10);
+        runs.finish(
+            "r1",
+            RunState::Failed,
+            Some("the run was cancelled".into()),
+            10,
+        );
 
         assert_eq!(runs.get("r1").unwrap().state, RunState::Cancelled);
     }
@@ -287,7 +295,10 @@ mod tests {
         runs.egress("r1", "http://workstation.local:11434", 256);
 
         let s = runs.get("r1").unwrap();
-        assert_eq!(s.egress_to.as_deref(), Some("http://workstation.local:11434"));
+        assert_eq!(
+            s.egress_to.as_deref(),
+            Some("http://workstation.local:11434")
+        );
         assert_eq!(s.egress_bytes, Some(768), "bytes accumulate across nodes");
     }
 
@@ -302,9 +313,16 @@ mod tests {
             }
         }
         let all = runs.list();
-        assert!(all.len() <= KEEP + 5, "runs should be pruned, got {}", all.len());
+        assert!(
+            all.len() <= KEEP + 5,
+            "runs should be pruned, got {}",
+            all.len()
+        );
         // Everything still running survived.
-        assert_eq!(all.iter().filter(|s| s.state == RunState::Running).count(), 5);
+        assert_eq!(
+            all.iter().filter(|s| s.state == RunState::Running).count(),
+            5
+        );
     }
 
     #[test]

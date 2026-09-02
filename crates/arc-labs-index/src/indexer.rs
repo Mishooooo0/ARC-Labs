@@ -84,7 +84,10 @@ pub fn build(
     let existing: HashMap<String, (i64, String)> = {
         let mut stmt = tx.prepare("SELECT path, id, hash FROM notes")?;
         let rows = stmt.query_map([], |r| {
-            Ok((r.get::<_, String>(0)?, (r.get::<_, i64>(1)?, r.get::<_, String>(2)?)))
+            Ok((
+                r.get::<_, String>(0)?,
+                (r.get::<_, i64>(1)?, r.get::<_, String>(2)?),
+            ))
         })?;
         rows.collect::<std::result::Result<_, _>>()?
     };
@@ -96,7 +99,12 @@ pub fn build(
         seen.push(path.as_str().to_string());
 
         match index_one(&tx, vault, path, existing.get(path.as_str()), force) {
-            Ok(Outcome::Indexed { links, tags, headings, is_canvas }) => {
+            Ok(Outcome::Indexed {
+                links,
+                tags,
+                headings,
+                is_canvas,
+            }) => {
                 if is_canvas {
                     stats.canvases += 1;
                 } else {
@@ -132,8 +140,15 @@ pub fn build(
 }
 
 enum Outcome {
-    Indexed { links: usize, tags: usize, headings: usize, is_canvas: bool },
-    Unchanged { is_canvas: bool },
+    Indexed {
+        links: usize,
+        tags: usize,
+        headings: usize,
+        is_canvas: bool,
+    },
+    Unchanged {
+        is_canvas: bool,
+    },
 }
 
 /// Index a single file. The one extraction path.
@@ -146,7 +161,10 @@ fn index_one(
 ) -> std::result::Result<Outcome, String> {
     let is_canvas = path.is_canvas();
 
-    let abs = vault.root().resolve_existing(path).map_err(|e| e.public())?;
+    let abs = vault
+        .root()
+        .resolve_existing(path)
+        .map_err(|e| e.public())?;
     let meta = std::fs::metadata(&abs).map_err(|e| e.kind().to_string())?;
     let size = meta.len() as i64;
     let mtime = meta
@@ -169,7 +187,12 @@ fn index_one(
             }
         }
         upsert_note(tx, path, None, size, mtime, &hash, true, None).map_err(|e| e.to_string())?;
-        return Ok(Outcome::Indexed { links: 0, tags: 0, headings: 0, is_canvas });
+        return Ok(Outcome::Indexed {
+            links: 0,
+            tags: 0,
+            headings: 0,
+            is_canvas,
+        });
     }
 
     let note = vault.read_note(path).map_err(|e| e.public())?;
@@ -240,7 +263,8 @@ fn index_one(
             .prepare_cached("INSERT INTO tags(src, name, name_folded) VALUES (?1, ?2, ?3)")
             .map_err(|e| e.to_string())?;
         for t in &rendered.tags {
-            stmt.execute(params![id, t, fold(t)]).map_err(|e| e.to_string())?;
+            stmt.execute(params![id, t, fold(t)])
+                .map_err(|e| e.to_string())?;
         }
     }
 
@@ -251,8 +275,14 @@ fn index_one(
             )
             .map_err(|e| e.to_string())?;
         for h in &rendered.headings {
-            stmt.execute(params![id, h.level as i64, h.text, fold(&h.text), h.line as i64])
-                .map_err(|e| e.to_string())?;
+            stmt.execute(params![
+                id,
+                h.level as i64,
+                h.text,
+                fold(&h.text),
+                h.line as i64
+            ])
+            .map_err(|e| e.to_string())?;
         }
     }
 
@@ -328,7 +358,10 @@ fn prune(tx: &Transaction<'_>, seen: &[String]) -> Result<()> {
              (SELECT id FROM notes WHERE path NOT IN (SELECT path FROM seen_paths))",
         [],
     )?;
-    tx.execute("DELETE FROM notes WHERE path NOT IN (SELECT path FROM seen_paths)", [])?;
+    tx.execute(
+        "DELETE FROM notes WHERE path NOT IN (SELECT path FROM seen_paths)",
+        [],
+    )?;
     Ok(())
 }
 
@@ -336,9 +369,11 @@ fn prune(tx: &Transaction<'_>, seen: &[String]) -> Result<()> {
 pub fn reindex_note(conn: &mut Connection, vault: &Vault, path: &VaultPath) -> Result<()> {
     let tx = conn.transaction()?;
     let existing: Option<(i64, String)> = tx
-        .query_row("SELECT id, hash FROM notes WHERE path = ?1", params![path.as_str()], |r| {
-            Ok((r.get(0)?, r.get(1)?))
-        })
+        .query_row(
+            "SELECT id, hash FROM notes WHERE path = ?1",
+            params![path.as_str()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
         .ok();
     // `force` is false: the hash check still short-circuits a spurious watcher
     // event, which on Windows and inside OneDrive is most of them.
@@ -373,13 +408,17 @@ mod tests {
     }
 
     fn count(conn: &Connection, table: &str) -> i64 {
-        conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0)).unwrap()
+        conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap()
     }
 
     #[test]
     fn builds_an_index_from_a_vault() {
         let (_t, v) = vault_with(&[
-            ("a.md", "---\ntitle: A\n---\n# Alpha\n\nSee [[b]] and [[missing]] #rust\n\n## Sub\n"),
+            (
+                "a.md",
+                "---\ntitle: A\n---\n# Alpha\n\nSee [[b]] and [[missing]] #rust\n\n## Sub\n",
+            ),
             ("b.md", "# Beta\n\nBack to [[a]] #rust #other\n"),
             ("board.canvas", "{\"nodes\":[]}"),
         ]);
@@ -396,13 +435,18 @@ mod tests {
         assert_eq!(count(&conn, "blocks"), 3); // Alpha, Sub, Beta
 
         // The title comes from the first H1, not the filename.
-        let title: String =
-            conn.query_row("SELECT title FROM notes WHERE path='a.md'", [], |r| r.get(0)).unwrap();
+        let title: String = conn
+            .query_row("SELECT title FROM notes WHERE path='a.md'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         assert_eq!(title, "Alpha");
 
         // Frontmatter is stored verbatim.
         let fm: String = conn
-            .query_row("SELECT frontmatter FROM notes WHERE path='a.md'", [], |r| r.get(0))
+            .query_row("SELECT frontmatter FROM notes WHERE path='a.md'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(fm, "title: A\n");
     }
@@ -427,10 +471,16 @@ mod tests {
         assert_eq!(first.skipped_unchanged, 0);
 
         let second = build(&mut conn, &v, false, |_| {}).unwrap();
-        assert_eq!(second.skipped_unchanged, 2, "nothing changed, so nothing should re-render");
+        assert_eq!(
+            second.skipped_unchanged, 2,
+            "nothing changed, so nothing should re-render"
+        );
 
         let forced = build(&mut conn, &v, true, |_| {}).unwrap();
-        assert_eq!(forced.skipped_unchanged, 0, "force should re-render everything");
+        assert_eq!(
+            forced.skipped_unchanged, 0,
+            "force should re-render everything"
+        );
     }
 
     #[test]
@@ -445,10 +495,15 @@ mod tests {
 
         std::fs::write(tmp.path().join("a.md"), b"# A\n\n[[three]]\n").unwrap();
         build(&mut conn, &v, false, |_| {}).unwrap();
-        assert_eq!(count(&conn, "links"), 1, "old links should be gone, not merged");
+        assert_eq!(
+            count(&conn, "links"),
+            1,
+            "old links should be gone, not merged"
+        );
 
-        let target: String =
-            conn.query_row("SELECT target FROM links", [], |r| r.get(0)).unwrap();
+        let target: String = conn
+            .query_row("SELECT target FROM links", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(target, "three");
     }
 
@@ -469,7 +524,11 @@ mod tests {
         assert_eq!(count(&conn, "notes"), 1);
         assert_eq!(count(&conn, "links"), 0);
         assert_eq!(count(&conn, "tags"), 0);
-        assert_eq!(count(&conn, "notes_fts"), 1, "the FTS row should be pruned too");
+        assert_eq!(
+            count(&conn, "notes_fts"),
+            1,
+            "the FTS row should be pruned too"
+        );
     }
 
     #[test]
@@ -499,7 +558,10 @@ mod tests {
         let vault_dir = tmp.path().join("vault");
         std::fs::create_dir_all(vault_dir.join("Daily")).unwrap();
         for (name, body) in [
-            ("a.md", "---\nzeta: 1\ntitle: A\n---\n# Alpha\n\n[[b]] [[nowhere]] #rust #x\n\n## Sub\n"),
+            (
+                "a.md",
+                "---\nzeta: 1\ntitle: A\n---\n# Alpha\n\n[[b]] [[nowhere]] #rust #x\n\n## Sub\n",
+            ),
             ("b.md", "# Beta\n\n![[a]] and [[Daily/log]] #rust\n"),
             ("Daily/log.md", "# Log\n\nplain text about provenance\n"),
             ("board.canvas", "{\"nodes\":[]}"),
@@ -573,10 +635,13 @@ mod tests {
 
     #[test]
     fn progress_reaches_the_total() {
-        let files: Vec<(String, String)> =
-            (0..200).map(|i| (format!("n{i}.md"), format!("# note {i}\n"))).collect();
-        let refs: Vec<(&str, &str)> =
-            files.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+        let files: Vec<(String, String)> = (0..200)
+            .map(|i| (format!("n{i}.md"), format!("# note {i}\n")))
+            .collect();
+        let refs: Vec<(&str, &str)> = files
+            .iter()
+            .map(|(a, b)| (a.as_str(), b.as_str()))
+            .collect();
         let (_t, v) = vault_with(&refs);
 
         let mut conn = crate::open_in_memory().unwrap();

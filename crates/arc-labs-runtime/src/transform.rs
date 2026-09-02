@@ -59,22 +59,36 @@ impl Transform {
         match head.to_lowercase().as_str() {
             "extract-frontmatter" | "frontmatter" => Transform::ExtractFrontmatter,
             "split-by-heading" | "split" => Transform::SplitByHeading {
-                level: rest.parse().ok().filter(|l| (1..=6).contains(l)).unwrap_or(2),
+                level: rest
+                    .parse()
+                    .ok()
+                    .filter(|l| (1..=6).contains(l))
+                    .unwrap_or(2),
             },
             "dedupe" | "unique" => Transform::Dedupe,
             "to-list" | "list" => Transform::ToList,
             "sort" => Transform::Sort,
-            "take" | "head" => Transform::Take { n: rest.parse().unwrap_or(10) },
-            "filter" | "grep" => Transform::Filter { contains: rest.to_string() },
+            "take" | "head" => Transform::Take {
+                n: rest.parse().unwrap_or(10),
+            },
+            "filter" | "grep" => Transform::Filter {
+                contains: rest.to_string(),
+            },
             "strip-headings" => Transform::StripHeadings,
             "squeeze" => Transform::Squeeze,
             "join" => Transform::Join {
-                separator: if rest.is_empty() { "\n\n".into() } else { unescape(rest) },
+                separator: if rest.is_empty() {
+                    "\n\n".into()
+                } else {
+                    unescape(rest)
+                },
             },
             // An unrecognised transform joins its inputs rather than failing the
             // run. A canvas is a workspace; a typo in one card should not throw
             // away the work of every card upstream of it.
-            _ => Transform::Join { separator: "\n\n".into() },
+            _ => Transform::Join {
+                separator: "\n\n".into(),
+            },
         }
     }
 
@@ -93,7 +107,8 @@ impl Transform {
                 let mut out: Vec<String> = Vec::new();
                 let mut current = String::new();
                 for line in joined.lines() {
-                    if heading_level(line).is_some_and(|l| l <= *level) && !current.trim().is_empty()
+                    if heading_level(line).is_some_and(|l| l <= *level)
+                        && !current.trim().is_empty()
                     {
                         out.push(current.trim_end().to_string());
                         current = String::new();
@@ -135,8 +150,10 @@ impl Transform {
                 .join("\n"),
 
             Transform::Sort => {
-                let mut ls: Vec<&str> =
-                    lines(inputs).into_iter().filter(|l| !l.trim().is_empty()).collect();
+                let mut ls: Vec<&str> = lines(inputs)
+                    .into_iter()
+                    .filter(|l| !l.trim().is_empty())
+                    .collect();
                 // Case-insensitive primary, exact secondary: two lines differing
                 // only in case must still have a defined order.
                 ls.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()).then(a.cmp(b)));
@@ -217,8 +234,16 @@ mod tests {
             "---\ntitle: B\n---\n# Three\n\ndelta\nbeta\n".to_string(),
         ];
         let specs = [
-            "extract-frontmatter", "split-by-heading 1", "dedupe", "to-list", "sort",
-            "take 3", "filter alpha", "strip-headings", "squeeze", "join ---",
+            "extract-frontmatter",
+            "split-by-heading 1",
+            "dedupe",
+            "to-list",
+            "sort",
+            "take 3",
+            "filter alpha",
+            "strip-headings",
+            "squeeze",
+            "join ---",
         ];
         for spec in specs {
             let first = Transform::parse(spec).apply(&inputs);
@@ -234,7 +259,10 @@ mod tests {
 
     #[test]
     fn extract_frontmatter_takes_the_yaml_and_nothing_else() {
-        let out = t("extract-frontmatter", &["---\na: 1\nb: 2\n---\n# Body\n\ntext\n"]);
+        let out = t(
+            "extract-frontmatter",
+            &["---\na: 1\nb: 2\n---\n# Body\n\ntext\n"],
+        );
         assert_eq!(out, "a: 1\nb: 2\n");
         // A note without frontmatter contributes nothing rather than erroring.
         assert_eq!(t("frontmatter", &["# No frontmatter\n"]), "");
@@ -242,9 +270,19 @@ mod tests {
 
     #[test]
     fn split_by_heading_breaks_at_the_requested_level() {
-        let out = t("split-by-heading 2", &["# A\n\none\n\n## B\n\ntwo\n\n### C\n\nthree\n"]);
-        assert_eq!(out.matches("---").count(), 1, "one break, at the ## heading");
-        assert!(out.contains("### C"), "a deeper heading stays inside its section");
+        let out = t(
+            "split-by-heading 2",
+            &["# A\n\none\n\n## B\n\ntwo\n\n### C\n\nthree\n"],
+        );
+        assert_eq!(
+            out.matches("---").count(),
+            1,
+            "one break, at the ## heading"
+        );
+        assert!(
+            out.contains("### C"),
+            "a deeper heading stays inside its section"
+        );
     }
 
     #[test]
@@ -257,12 +295,18 @@ mod tests {
     #[test]
     fn to_list_does_not_double_bullet_an_existing_list() {
         assert_eq!(t("to-list", &["one\ntwo\n"]), "- one\n- two");
-        assert_eq!(t("list", &["- already\n* starred\n"]), "- already\n* starred");
+        assert_eq!(
+            t("list", &["- already\n* starred\n"]),
+            "- already\n* starred"
+        );
     }
 
     #[test]
     fn sort_is_case_insensitive_but_still_total() {
-        assert_eq!(t("sort", &["Banana\napple\nCherry\n"]), "apple\nBanana\nCherry");
+        assert_eq!(
+            t("sort", &["Banana\napple\nCherry\n"]),
+            "apple\nBanana\nCherry"
+        );
         // Two lines differing only in case still get a defined order.
         assert_eq!(t("sort", &["b\nB\n"]), "B\nb");
     }
@@ -271,7 +315,10 @@ mod tests {
     fn take_filter_strip_and_squeeze() {
         assert_eq!(t("take 2", &["a\nb\nc\n"]), "a\nb");
         assert_eq!(t("filter BET", &["alpha\nbeta\ngamma\n"]), "beta");
-        assert_eq!(t("strip-headings", &["# H\ntext\n## H2\nmore\n"]), "text\nmore");
+        assert_eq!(
+            t("strip-headings", &["# H\ntext\n## H2\nmore\n"]),
+            "text\nmore"
+        );
         assert_eq!(t("squeeze", &["a\n\n\n\nb\n"]), "a\n\nb");
     }
 
@@ -293,12 +340,21 @@ mod tests {
     #[test]
     fn a_tag_is_not_a_heading() {
         // `#rust` must not be stripped as a heading.
-        assert_eq!(t("strip-headings", &["#rust\n# Real\ntext\n"]), "#rust\ntext");
+        assert_eq!(
+            t("strip-headings", &["#rust\n# Real\ntext\n"]),
+            "#rust\ntext"
+        );
     }
 
     #[test]
     fn empty_input_produces_empty_output_rather_than_an_error() {
-        for spec in ["dedupe", "sort", "to-list", "extract-frontmatter", "split-by-heading 2"] {
+        for spec in [
+            "dedupe",
+            "sort",
+            "to-list",
+            "extract-frontmatter",
+            "split-by-heading 2",
+        ] {
             assert_eq!(t(spec, &[]), "", "{spec} did not handle empty input");
             assert_eq!(t(spec, &[""]), "", "{spec} did not handle an empty string");
         }

@@ -10,6 +10,8 @@ license.workspace      = true
 [dependencies]
 arc-labs-core  = { workspace = true }
 arc-labs-index = { workspace = true }
+arc-labs-api   = { workspace = true }
+arc-labs-ledger = { workspace = true }
 anyhow        = { workspace = true }
 clap          = { workspace = true }
 walkdir       = { workspace = true }
