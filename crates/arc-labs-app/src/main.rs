@@ -333,6 +333,29 @@ async fn pick_folder(app: tauri::AppHandle) -> Option<String> {
     rx.await.ok().flatten()
 }
 
+/// Where a browser can reach this window's engine.
+///
+/// Overridable because two vaults open at once would otherwise fight over one
+/// port, and the loser silently has no browser companion.
+fn companion_port() -> u16 {
+    std::env::var("ARC_LABS_COMPANION_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(7777)
+}
+
+/// The UI bundle to serve to a browser. The desktop window loads its own copy
+/// from the Tauri bundle; this is the one served over HTTP.
+fn companion_ui_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("ARC_LABS_UI") {
+        return PathBuf::from(dir);
+    }
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|p| p.join("ui")))
+        .unwrap_or_else(|| PathBuf::from("ui/dist"))
+}
+
 fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -385,7 +408,7 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .manage(api)
+        .manage(Arc::clone(&api))
         .invoke_handler(tauri::generate_handler![
             status,
             tree,
@@ -431,10 +454,67 @@ fn main() {
             weave_pass,
             user_active
         ])
-        .setup(|app| {
+        .setup(move |app| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_title("ARC-LABS");
             }
+
+            // Vault change events reach this window as Tauri events. The browser
+            // gets the same events over a WebSocket from the server below; one
+            // event type, two transports, exactly as `transport.ts` already does
+            // for request/response.
+            let handle = app.handle().clone();
+            let mut rx = api.subscribe();
+            tauri::async_runtime::spawn(async move {
+                use tauri::Emitter;
+                loop {
+                    match rx.recv().await {
+                        Ok(event) => {
+                            let _ = handle.emit("arc:vault", event);
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
+                            // Tell the window it has a hole rather than letting
+                            // it believe it saw everything.
+                            let _ = handle.emit(
+                                "arc:vault",
+                                serde_json::json!({ "kind": "lagged", "missed": missed }),
+                            );
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+
+            // The desktop app *is* the server. A browser on this machine points
+            // at the port and shares one Arc<Api>, one vault handle and one
+            // index with the window — so there is a single copy of the truth in
+            // memory and nothing to reconcile between the two surfaces.
+            //
+            // Loopback only, and no token: this is the same machine and the same
+            // person. Binding anywhere else is what `arc-labs serve` is for, and
+            // that path demands a token.
+            let serving = Arc::clone(&api);
+            tauri::async_runtime::spawn(async move {
+                let cfg = arc_labs_server::ServerConfig {
+                    host: std::net::IpAddr::from([127, 0, 0, 1]),
+                    port: companion_port(),
+                    ui_dir: companion_ui_dir(),
+                    token: None,
+                };
+                let addr = cfg.addr();
+                tracing::info!(%addr, "companion server for browsers");
+                // Almost always "a second window already has the port", or
+                // `arc-labs serve` does. Not fatal: the desktop window works
+                // regardless, and saying so beats refusing to start over a
+                // feature the user may not be using.
+                if let Err(e) = arc_labs_server::serve(serving, cfg).await {
+                    tracing::warn!(
+                        %addr, error = %e,
+                        "no companion server; the desktop window is unaffected"
+                    );
+                }
+            });
+
             Ok(())
         })
         .run(tauri::generate_context!())

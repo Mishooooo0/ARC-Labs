@@ -411,3 +411,39 @@ export interface ApiVersion {
 
 /** The major this UI was written against. */
 export const CLIENT_API_MAJOR = 1;
+
+// ── Change events ───────────────────────────────────────────────────────────
+
+export type EventKind =
+  | "created"
+  | "edited"
+  | "renamed"
+  | "deleted"
+  | "proposed"
+  | "accepted"
+  | "indexReady"
+  | "suggested"
+  /** Synthesised locally when the stream drops events or reconnects. */
+  | "lagged";
+
+/**
+ * Something changed in the vault, pushed rather than polled.
+ *
+ * Carries what changed and who did it, never the content — pushing note bodies
+ * to every listener would put the whole vault on the wire each time anyone
+ * typed. A client that cares fetches the note it is actually showing.
+ */
+export interface VaultEvent {
+  kind: EventKind;
+  path?: string;
+  /** Where a rename came from. */
+  from?: string;
+  /** Content hash after the change, so a client can tell if it already has it. */
+  hash?: string;
+  /** Which client caused it. Clients ignore their own. */
+  origin?: string;
+  actorKind: string;
+  at: string;
+  /** Present on a `lagged` notice: how many events this client missed. */
+  missed?: number;
+}

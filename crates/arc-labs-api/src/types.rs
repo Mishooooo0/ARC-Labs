@@ -472,3 +472,53 @@ pub const API_MAJOR: u32 = 1;
 
 /// The minor this build speaks. Bump for every additive change.
 pub const API_MINOR: u32 = 1;
+
+// ── Change events ───────────────────────────────────────────────────────────
+
+/// Something happened to the vault.
+///
+/// Broadcast to every connected surface so a desktop window and a browser tab
+/// looking at the same vault do not drift apart. It carries what changed and
+/// who did it — never the content, which the client fetches if it turns out to
+/// care. Pushing note bodies to every listener would put the whole vault on the
+/// wire every time anyone typed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultEvent {
+    pub kind: EventKind,
+    /// The note or canvas affected. Absent for vault-wide events.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<VaultPath>,
+    /// Where a rename came from.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from: Option<VaultPath>,
+    /// The content hash after the change, so a listener can tell whether the
+    /// version it already holds is the one being described.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hash: Option<String>,
+    /// Which client caused this. A client ignores its own events — otherwise
+    /// the surface that just made a change immediately reloads because of it,
+    /// and an editor would fight the person typing into it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    /// "human" or "agent". The same distinction the ledger draws.
+    pub actor_kind: String,
+    pub at: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EventKind {
+    Created,
+    Edited,
+    Renamed,
+    Deleted,
+    /// An agent proposed something. Nothing on disk changed.
+    Proposed,
+    /// A proposal was applied, so something on disk did.
+    Accepted,
+    /// The index finished building; index-backed capabilities are now real.
+    IndexReady,
+    /// Weave produced link suggestions.
+    Suggested,
+}

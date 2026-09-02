@@ -108,6 +108,16 @@ pub struct Api {
     /// budget is what turns that into Weave standing still. The daemon only
     /// reads it.
     weave: weave::WeaveState,
+    /// Change events, fanned out to every connected surface.
+    ///
+    /// A `broadcast` channel rather than a list of callbacks: senders never
+    /// block, a slow listener is dropped rather than stalling a save, and the
+    /// mutation path stays synchronous. Publishing must never be able to make
+    /// writing a note slower, so a listener that cannot keep up loses events
+    /// and resynchronises rather than holding everyone else up.
+    events: tokio::sync::broadcast::Sender<VaultEvent>,
+    /// The client id to stamp on events, when a shell knows it.
+    origin: Mutex<Option<String>>,
 }
 
 impl Api {
@@ -123,6 +133,58 @@ impl Api {
             index: Mutex::new(None),
             runs: runs::Runs::new(),
             weave: weave::WeaveState::new(),
+            // 256 is generous for a human-paced vault and small enough that a
+            // listener which has stopped reading cannot pin much memory.
+            events: tokio::sync::broadcast::channel(256).0,
+            origin: Mutex::new(None),
+        }
+    }
+
+    /// Subscribe to change events. Every shell fans these out its own way:
+    /// WebSocket in the browser, Tauri events on the desktop.
+    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<VaultEvent> {
+        self.events.subscribe()
+    }
+
+    /// Publish a change. Deliberately infallible from the caller's view — an
+    /// event nobody is listening for is not an error, and a failed broadcast
+    /// must never fail the write that caused it.
+    fn publish(&self, kind: EventKind, path: Option<&VaultPath>, hash: Option<String>) {
+        self.publish_full(kind, path, None, hash, "human");
+    }
+
+    fn publish_full(
+        &self,
+        kind: EventKind,
+        path: Option<&VaultPath>,
+        from: Option<&VaultPath>,
+        hash: Option<String>,
+        actor_kind: &str,
+    ) {
+        let event = VaultEvent {
+            kind,
+            path: path.cloned(),
+            from: from.cloned(),
+            hash,
+            origin: self.origin.lock().ok().and_then(|o| o.clone()),
+            actor_kind: actor_kind.to_string(),
+            at: arc_labs_ledger::now_rfc3339(),
+        };
+        // `send` errors only when there are no receivers. That is the normal
+        // case for a CLI run, and is not worth a log line.
+        let _ = self.events.send(event);
+    }
+
+    /// Weave found something. Used from `weave.rs`, hence not private.
+    pub(crate) fn publish_suggested(&self) {
+        self.publish_full(EventKind::Suggested, None, None, None, "agent");
+    }
+
+    /// Tag subsequent events with the client that caused them, so that client
+    /// can ignore its own. Set per request by the shells.
+    pub fn set_origin(&self, origin: Option<String>) {
+        if let Ok(mut o) = self.origin.lock() {
+            *o = origin;
         }
     }
 
@@ -329,6 +391,10 @@ impl Api {
             if let Err(e) = self.reindex_note(path) {
                 tracing::warn!(error = %e, path = %path, "could not reindex after save");
             }
+            // Only on a real write. `Saved::Unchanged` means the bytes on disk
+            // already matched, and announcing a change that did not happen
+            // would make every other surface reload for nothing.
+            self.publish(EventKind::Edited, Some(path), Some(result.hash.clone()));
         }
         Ok(result)
     }
@@ -364,7 +430,9 @@ impl Api {
         if let Err(e) = self.reindex_note(path) {
             tracing::warn!(error = %e, path = %path, "could not index the new note");
         }
-        self.read_note_for_edit(path)
+        let view = self.read_note_for_edit(path)?;
+        self.publish(EventKind::Created, Some(path), Some(view.hash.clone()));
+        Ok(view)
     }
 
     /// A free path near `desired`, so a name collision becomes "Untitled 2"
@@ -424,7 +492,15 @@ impl Api {
         if let Err(e) = self.reindex_note(to) {
             tracing::warn!(error = %e, path = %to, "could not index the renamed note");
         }
-        self.read_note_for_edit(to)
+        let view = self.read_note_for_edit(to)?;
+        self.publish_full(
+            EventKind::Renamed,
+            Some(to),
+            Some(from),
+            Some(view.hash.clone()),
+            "human",
+        );
+        Ok(view)
     }
 
     /// Delete a note. The bytes go to the vault's trash; the history stays.
@@ -460,6 +536,7 @@ impl Api {
             let _ = index.forget_note(path);
         }
 
+        self.publish(EventKind::Deleted, Some(path), None);
         Ok(Deleted {
             path: path.clone(),
             // Only shown where absolute paths are allowed to be shown at all.
@@ -896,7 +973,9 @@ impl Api {
             .map_err(ledger_err)?;
 
         let _ = self.reindex_note(path);
-        Ok(save_result(saved, &target))
+        let result = save_result(saved, &target);
+        self.publish(EventKind::Edited, Some(path), Some(result.hash.clone()));
+        Ok(result)
     }
 
     /// Record an agent's proposal. **Does not touch the note.**
@@ -922,6 +1001,10 @@ impl Api {
             .map_err(ledger_err)?;
 
         let index = ledger.read(path).map_err(ledger_err)?.len() - 1;
+        // An agent proposed something. Nothing on disk moved, and the event says
+        // so via its kind — a surface showing an inbox count needs to know, an
+        // editor does not need to reload.
+        self.publish_full(EventKind::Proposed, Some(path), None, None, "agent");
         let (added, removed) = diff_counts(entry.patch.as_deref());
         Ok(Proposal {
             index,
@@ -979,7 +1062,15 @@ impl Api {
             .map_err(ledger_err)?;
 
         let _ = self.reindex_note(path);
-        Ok(save_result(saved, &proposed))
+        let result = save_result(saved, &proposed);
+        self.publish_full(
+            EventKind::Accepted,
+            Some(path),
+            None,
+            Some(result.hash.clone()),
+            "agent",
+        );
+        Ok(result)
     }
 
     /// Discard a proposal. The note is never touched.
@@ -1038,6 +1129,10 @@ impl Api {
 
         let stats = result.map_err(index_err)?;
         *self.index.lock().expect("index lock poisoned") = Some(index);
+        // `index` and `weave` were absent from the handshake until this moment.
+        // A client that hid search while it waited needs telling that it can
+        // stop hiding it.
+        self.publish(EventKind::IndexReady, None, None);
         Ok(stats)
     }
 
@@ -1285,6 +1380,136 @@ mod tests {
     }
 
     // ── Note lifecycle ──────────────────────────────────────────────────────
+
+    // ── Change events ───────────────────────────────────────────────────────
+
+    fn drain(rx: &mut tokio::sync::broadcast::Receiver<VaultEvent>) -> Vec<VaultEvent> {
+        let mut out = Vec::new();
+        while let Ok(e) = rx.try_recv() {
+            out.push(e);
+        }
+        out
+    }
+
+    #[test]
+    fn every_mutation_announces_itself() {
+        let (_t, api) = api_with_vault(Capabilities::desktop());
+        let mut rx = api.subscribe();
+
+        api.create_note(&vp("Events/New.md"), "# New\n").unwrap();
+        let n = api.read_note_for_edit(&vp("Events/New.md")).unwrap();
+        api.write_note(&vp("Events/New.md"), "# New\n\nedited\n", Some(&n.hash))
+            .unwrap();
+        api.rename_note(&vp("Events/New.md"), &vp("Events/Moved.md"))
+            .unwrap();
+        api.delete_note(&vp("Events/Moved.md")).unwrap();
+
+        let kinds: Vec<EventKind> = drain(&mut rx).into_iter().map(|e| e.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                EventKind::Created,
+                EventKind::Edited,
+                EventKind::Renamed,
+                EventKind::Deleted
+            ],
+            "a surface watching this vault would have missed something"
+        );
+    }
+
+    /// A save that wrote nothing must announce nothing. Otherwise every other
+    /// surface reloads because someone pressed save on an unchanged note.
+    #[test]
+    fn an_unchanged_save_is_not_an_event() {
+        let (_t, api) = api_with_vault(Capabilities::desktop());
+        let path = vp("a.md");
+        let n = api.read_note_for_edit(&path).unwrap();
+        let text = n.text.clone().unwrap();
+
+        let mut rx = api.subscribe();
+        let saved = api.write_note(&path, &text, Some(&n.hash)).unwrap();
+
+        assert!(!saved.written, "the bytes already matched");
+        assert!(
+            drain(&mut rx).is_empty(),
+            "announced a change that did not happen"
+        );
+    }
+
+    /// A rename says where the note came from, so a surface showing the old
+    /// path can follow it rather than blanking.
+    #[test]
+    fn a_rename_event_carries_both_paths() {
+        let (_t, api) = api_with_vault(Capabilities::desktop());
+        let mut rx = api.subscribe();
+        api.rename_note(&vp("a.md"), &vp("Archive/a.md")).unwrap();
+
+        let events = drain(&mut rx);
+        let e = events
+            .iter()
+            .find(|e| e.kind == EventKind::Renamed)
+            .expect("no rename event");
+        assert_eq!(e.from.as_ref().map(|p| p.as_str()), Some("a.md"));
+        assert_eq!(e.path.as_ref().map(|p| p.as_str()), Some("Archive/a.md"));
+    }
+
+    /// The stamp that lets a client ignore its own changes. Without it the
+    /// surface that just saved reloads because of its own save.
+    #[test]
+    fn events_carry_the_origin_that_caused_them() {
+        let (_t, api) = api_with_vault(Capabilities::desktop());
+        let mut rx = api.subscribe();
+
+        api.set_origin(Some("tab-one".into()));
+        api.create_note(&vp("One.md"), "x").unwrap();
+        api.set_origin(Some("tab-two".into()));
+        api.create_note(&vp("Two.md"), "x").unwrap();
+
+        let origins: Vec<Option<String>> = drain(&mut rx).into_iter().map(|e| e.origin).collect();
+        assert_eq!(
+            origins,
+            vec![Some("tab-one".into()), Some("tab-two".into())]
+        );
+    }
+
+    /// Agent activity is distinguishable in the stream, the same as it is in the
+    /// ledger — a proposal must not look like someone editing the file.
+    #[test]
+    fn a_proposal_is_an_agent_event_and_an_accept_is_the_one_that_lands() {
+        let (_t, api) = api_with_vault(Capabilities::desktop());
+        let path = vp("a.md");
+        let mut rx = api.subscribe();
+
+        let p = api
+            .propose(&path, "e-tron", "m", "s", "why", "# A\n\nproposed\n")
+            .unwrap();
+        let proposed = drain(&mut rx);
+        assert_eq!(proposed.len(), 1);
+        assert_eq!(proposed[0].kind, EventKind::Proposed);
+        assert_eq!(proposed[0].actor_kind, "agent");
+
+        api.accept(&path, p.index).unwrap();
+        let accepted = drain(&mut rx);
+        let e = accepted
+            .iter()
+            .find(|e| e.kind == EventKind::Accepted)
+            .expect("no accept event");
+        assert_eq!(e.actor_kind, "agent");
+        assert!(
+            e.hash.is_some(),
+            "an accept changes the file, so it carries the new hash"
+        );
+    }
+
+    /// Publishing must never be able to fail a write. A vault nobody is watching
+    /// is the normal case for a CLI run.
+    #[test]
+    fn a_mutation_succeeds_with_nobody_listening() {
+        let (_t, api) = api_with_vault(Capabilities::desktop());
+        // No subscribers at all.
+        api.create_note(&vp("Alone.md"), "# Alone\n").unwrap();
+        assert!(api.read_note_for_edit(&vp("Alone.md")).is_ok());
+    }
 
     #[test]
     fn the_handshake_reports_this_build() {

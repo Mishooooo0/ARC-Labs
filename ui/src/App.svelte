@@ -17,7 +17,7 @@
   import type {
     Backlink, GraphData, IndexStats, NoteRef, NoteView as Note, OutgoingLink,
     CanvasRunnability, CanvasView, LinkSuggestion, Proposal, RunStatus, SearchHit, Status,
-    TagCount, TimelineEntry, TreeView, UnresolvedLink, WeaveStatus,
+    TagCount, TimelineEntry, TreeView, UnresolvedLink, VaultEvent, WeaveStatus,
   } from "./lib/types";
   import { TransportError } from "./lib/types";
   import ArcMark from "./components/ArcMark.svelte";
@@ -170,6 +170,81 @@
     document.documentElement.setAttribute("data-theme", theme);
     localStorage.setItem("arc-labs-theme", theme);
   });
+
+  /**
+   * Live changes from every other surface on this vault.
+   *
+   * The desktop window and a browser tab share one engine, so a note created in
+   * one appears in the other without a refresh. External writers land here too,
+   * once a watcher exists.
+   */
+  $effect(() => {
+    const stop = transport.subscribe((e) => void onVaultEvent(e));
+    return stop;
+  });
+
+  /** Set when a remote change lands on the note being edited with unsaved work. */
+  let staleWarning = $state<string | null>(null);
+
+  async function onVaultEvent(e: VaultEvent) {
+    // Our own doing. Reacting to it would mean the surface that just saved
+    // reloads because of its own save, and the editor would fight the person
+    // typing into it.
+    if (e.origin && e.origin === transport.clientId) return;
+
+    // The stream dropped events for us, so what we hold may be wrong in ways we
+    // cannot enumerate. Refetch rather than guess.
+    if (e.kind === "lagged") {
+      await refreshTree();
+      void loadIndex();
+      return;
+    }
+
+    if (e.kind === "indexReady") {
+      void loadIndex();
+      return;
+    }
+    if (e.kind === "suggested" || e.kind === "proposed") {
+      // Inbox and proposal counts move; nothing on disk did.
+      void loadInbox();
+      if (selected && e.path === selected) void loadHistory(selected);
+      return;
+    }
+
+    // Anything structural changes the tree.
+    if (e.kind === "created" || e.kind === "deleted" || e.kind === "renamed") {
+      await refreshTree();
+      void loadIndex();
+    }
+
+    const touched = e.path === selected || (e.from && e.from === selected);
+    if (!touched || !selected) return;
+
+    if (e.kind === "deleted") {
+      selected = null;
+      note = null;
+      view = "home";
+      error = "The note you were reading was deleted somewhere else.";
+      return;
+    }
+    if (e.kind === "renamed" && e.path) {
+      await openNote(e.path);
+      return;
+    }
+
+    // The note under the cursor changed elsewhere. This is the one case that can
+    // destroy work, so it is the one case that never acts on its own: if there
+    // are unsaved edits, say so and let the person decide. Silently replacing
+    // what someone is typing is the worst thing this feature could do.
+    if (editing && saveState !== "clean") {
+      staleWarning =
+        "This note changed somewhere else while you were editing. Your unsaved " +
+        "text is untouched — saving will be refused until you reload.";
+      return;
+    }
+    await openNote(selected);
+    void loadHistory(selected);
+  }
 
   function message(e: unknown): string {
     return e instanceof TransportError ? e.message : String(e);
@@ -810,10 +885,35 @@
       </aside>
 
       <main class="pane">
-        {#if error}
-          <div class="banner" class:bad={saveState === "conflict"} role="alert">
-            <span>{error}</span>
-            <button onclick={() => (error = null)} aria-label="Dismiss">×</button>
+        <!-- One banner. The Phase 1 save guard and the live-change notice are
+             two mechanisms reporting the same event, and showing both stacked
+             says it twice and reads as two separate problems. Whichever fires
+             first owns the message; the reload affordance rides along either
+             way, because it is the same recovery. -->
+        {#if error || staleWarning}
+          <div
+            class="banner"
+            class:bad={saveState === "conflict" || staleWarning !== null}
+            role="alert"
+          >
+            <span>{error ?? staleWarning}</span>
+            {#if staleWarning}
+              <!-- Never automatic: reloading discards unsaved text, so it is a
+                   choice someone makes, not a side effect of a notification. -->
+              <button
+                class="reload"
+                onclick={async () => {
+                  staleWarning = null;
+                  error = null;
+                  if (selected) await openNote(selected);
+                }}>Reload and lose my edits</button>
+            {/if}
+            <button
+              onclick={() => {
+                error = null;
+                staleWarning = null;
+              }}
+              aria-label="Dismiss">×</button>
           </div>
         {/if}
 
@@ -1034,6 +1134,15 @@
 
   .spacer {
     flex: 1;
+  }
+
+  .banner .reload {
+    color: var(--arc-danger);
+    border: 1px solid var(--arc-danger);
+    border-radius: var(--arc-radius-sm);
+    padding: 0 var(--arc-space-2);
+    margin-left: var(--arc-space-2);
+    white-space: nowrap;
   }
 
   .sidehead {

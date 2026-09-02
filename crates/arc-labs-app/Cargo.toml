@@ -23,6 +23,7 @@ tracing              = { workspace = true }
 tracing-subscriber   = { workspace = true }
 tauri                = { version = "2", features = [] }
 tauri-plugin-dialog  = "2"
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["sync", "rt-multi-thread", "net", "macros"] }
 arc-labs-index.workspace = true
 arc-labs-weave.workspace = true
+arc-labs-server.workspace = true

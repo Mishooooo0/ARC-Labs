@@ -175,6 +175,7 @@ pub fn router(api: Arc<Api>, cfg: &ServerConfig) -> Router {
         .route("/weave/status", get(weave_status))
         .route("/weave/pass", post(weave_pass))
         .route("/mcp", post(mcp))
+        .route("/events", get(events))
         .route("/browse", get(browse))
         .route("/vault/open", post(open_vault))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth))
@@ -227,16 +228,46 @@ async fn auth(
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
+    // Which client is asking, so the events this request causes come back
+    // tagged and that client can ignore its own. Untrusted and only ever
+    // compared for equality by the client that sent it, so a forged value can
+    // at worst make someone miss their own echo.
+    state.api.set_origin(
+        req.headers()
+            .get("x-arc-client")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string),
+    );
+
     let Some(expected) = state.token.as_deref() else {
         return next.run(req).await;
     };
-    let presented = req
+
+    let from_header = req
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "));
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(str::to_string);
 
-    match presented {
+    // A browser cannot set headers on a WebSocket handshake, so the token may
+    // also arrive as a query parameter. Accepted only for the events upgrade:
+    // everywhere else a query token would end up in logs and history for no
+    // reason, and this URL is always same-origin.
+    let from_query = if req.uri().path().ends_with("/events") {
+        req.uri().query().and_then(|q| {
+            q.split('&')
+                .filter_map(|kv| kv.split_once('='))
+                .find(|(k, _)| *k == "token")
+                .map(|(_, v)| percent_decode(v))
+        })
+    } else {
+        None
+    };
+
+    let presented = from_header.or(from_query);
+
+    match presented.as_deref() {
         Some(t) if constant_time_eq(t.as_bytes(), expected.as_bytes()) => next.run(req).await,
         _ => (
             StatusCode::UNAUTHORIZED,
@@ -250,11 +281,76 @@ async fn auth(
 }
 
 /// Compare without leaking the position of the first difference through timing.
+/// Just enough percent-decoding for a token in a query string. Tokens are
+/// generated from an alphanumeric alphabet, so this only ever has to survive a
+/// client that encoded them anyway.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(byte) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }
     a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+/// `GET /api/v1/events` — the push channel.
+///
+/// Upgrades to a WebSocket and forwards every [`VaultEvent`] until the client
+/// goes away. It sits behind the same token as everything else, because a
+/// stream of "which note just changed" is a description of the vault.
+async fn events(
+    ws: axum::extract::ws::WebSocketUpgrade,
+    State(s): State<Arc<AppState>>,
+) -> Response {
+    let mut rx = s.api.subscribe();
+    ws.on_upgrade(move |mut socket| async move {
+        use axum::extract::ws::Message;
+        loop {
+            match rx.recv().await {
+                Ok(event) => {
+                    let Ok(text) = serde_json::to_string(&event) else {
+                        continue;
+                    };
+                    if socket.send(Message::Text(text.into())).await.is_err() {
+                        // The client went away mid-send. Normal; a tab closed.
+                        break;
+                    }
+                }
+                // This connection fell behind and the channel dropped events for
+                // it. Say so rather than pretending it saw everything: the
+                // client's answer is to refetch, and it can only do that if it
+                // knows it has a hole.
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    let notice = serde_json::json!({ "kind": "lagged", "missed": n });
+                    if socket
+                        .send(Message::Text(notice.to_string().into()))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                // The Api is gone; the process is shutting down.
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    })
 }
 
 /// `GET /api/version` — the one payload whose shape never changes.

@@ -124,6 +124,7 @@ dependencies = [
  "arc-labs-api",
  "arc-labs-core",
  "arc-labs-index",
+ "arc-labs-server",
  "arc-labs-weave",
  "serde",
  "serde_json",

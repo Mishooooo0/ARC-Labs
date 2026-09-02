@@ -201,6 +201,9 @@ impl crate::Api {
             .pass(&store, vault)
             .map_err(|e| ApiError::new(ErrorCode::Io, e.to_string()))?;
         *self.weave.last_pass.lock().expect("weave lock poisoned") = Some(report.clone());
+        if report.suggested > 0 {
+            self.publish_suggested();
+        }
         Ok(report)
     }
 

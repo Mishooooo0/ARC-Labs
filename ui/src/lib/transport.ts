@@ -18,7 +18,7 @@
 
 import type {
   Backlink, CanvasRunnability, CanvasView, DirListing, EntryDiff, GraphData, IndexStats,
-  ApiVersion, Deleted, LinkSuggestion, NodeGeometry, NoteRef, NoteView, OutgoingLink, PassReport, Proposal, RunStatus,
+  ApiVersion, Deleted, LinkSuggestion, NodeGeometry, VaultEvent, NoteRef, NoteView, OutgoingLink, PassReport, Proposal, RunStatus,
   SaveResult, SearchHit, Status, TagCount, TimelineEntry, TreeView, UnresolvedLink, VaultInfo,
   WeaveStatus,
 } from "./types";
@@ -34,6 +34,21 @@ export interface Transport {
    * wire means; this is where that is established rather than assumed.
    */
   version(): Promise<ApiVersion>;
+  /**
+   * A stable id for this client, stamped on the changes it causes so it can
+   * ignore its own events. Without it, the surface that just saved a note
+   * immediately reloads because of its own save, and the editor fights whoever
+   * is typing into it.
+   */
+  readonly clientId: string;
+  /**
+   * Listen for vault changes. Returns an unsubscribe function.
+   *
+   * WebSocket in the browser, Tauri events on the desktop — the same split that
+   * already makes four shells cost one UI, extended from request/response to
+   * push. Callers never learn which one they got.
+   */
+  subscribe(handler: (event: VaultEvent) => void): () => void;
   /**
    * Whether this deployment can do a thing — `"index"`, `"weave"`, `"mcp"`,
    * `"events"`, `"browse"`. False before the handshake completes, so callers
@@ -121,6 +136,18 @@ export interface Transport {
 }
 
 /**
+ * A per-tab, per-window id. Not persisted: two tabs on the same machine are two
+ * clients and must not swallow each other's events.
+ */
+function newClientId(): string {
+  try {
+    return crypto.randomUUID();
+  } catch {
+    return `c${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  }
+}
+
+/**
  * Tauri 2 installs `__TAURI_INTERNALS__` before any app script runs. Checked
  * once at module load rather than per call, so behaviour cannot change halfway
  * through a session.
@@ -179,13 +206,20 @@ function checkMajor(v: ApiVersion): ApiVersion {
 
 class ServerTransport implements Transport {
   readonly kind = "server" as const;
+  readonly clientId = newClientId();
   #token = takeToken();
   #version: ApiVersion | null = null;
   #versionInFlight: Promise<ApiVersion> | null = null;
+  #socket: WebSocket | null = null;
+  #listeners = new Set<(e: VaultEvent) => void>();
+  #retry = 0;
+  #closing = false;
 
   async #call<T>(path: string, init?: RequestInit): Promise<T> {
     const headers = new Headers(init?.headers);
     if (this.#token) headers.set("Authorization", `Bearer ${this.#token}`);
+    // So the events caused by this request come back tagged as ours.
+    headers.set("X-Arc-Client", this.clientId);
     if (init?.body) headers.set("Content-Type", "application/json");
 
     let res: Response;
@@ -228,6 +262,54 @@ class ServerTransport implements Transport {
 
   can(capability: string) {
     return this.#version?.capabilities.includes(capability) ?? false;
+  }
+
+  subscribe(handler: (event: VaultEvent) => void) {
+    this.#listeners.add(handler);
+    this.#connect();
+    return () => {
+      this.#listeners.delete(handler);
+      if (this.#listeners.size === 0) {
+        this.#closing = true;
+        this.#socket?.close();
+        this.#socket = null;
+      }
+    };
+  }
+
+  #connect() {
+    if (this.#socket || this.#listeners.size === 0) return;
+    this.#closing = false;
+
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    const base = new URL("api/v1/events", location.href).pathname;
+    // The token rides in the query string because a browser cannot set headers
+    // on a WebSocket handshake. It never reaches a server log we do not own —
+    // this URL is always same-origin — and the server accepts it only here.
+    const q = this.#token ? `?token=${encodeURIComponent(this.#token)}` : "";
+    const socket = new WebSocket(`${proto}//${location.host}${base}${q}`);
+    this.#socket = socket;
+
+    socket.onopen = () => {
+      this.#retry = 0;
+    };
+    socket.onmessage = (m) => {
+      try {
+        const event = JSON.parse(m.data as string) as VaultEvent;
+        for (const l of this.#listeners) l(event);
+      } catch {
+        /* a malformed frame is not worth tearing the connection down for */
+      }
+    };
+    socket.onclose = () => {
+      this.#socket = null;
+      if (this.#closing || this.#listeners.size === 0) return;
+      // Backoff, capped. A server restart should not need a page reload, and a
+      // server that is down should not be hammered while it comes back.
+      const wait = Math.min(30_000, 500 * 2 ** this.#retry++);
+      setTimeout(() => this.#connect(), wait);
+    };
+    socket.onerror = () => socket.close();
   }
 
   status() {
@@ -406,6 +488,7 @@ class ServerTransport implements Transport {
 
 class DesktopTransport implements Transport {
   readonly kind = "desktop" as const;
+  readonly clientId = newClientId();
   #version: ApiVersion | null = null;
 
   async #invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
@@ -430,6 +513,25 @@ class DesktopTransport implements Transport {
 
   can(capability: string) {
     return this.#version?.capabilities.includes(capability) ?? false;
+  }
+
+  subscribe(handler: (event: VaultEvent) => void) {
+    // Tauri's listen() is async but the caller needs an unsubscribe now, so the
+    // teardown is deferred behind the same handle rather than made async.
+    let stop: (() => void) | null = null;
+    let cancelled = false;
+
+    void (async () => {
+      const { listen } = await import("@tauri-apps/api/event");
+      const un = await listen<VaultEvent>("arc:vault", (e) => handler(e.payload));
+      if (cancelled) un();
+      else stop = un;
+    })();
+
+    return () => {
+      cancelled = true;
+      stop?.();
+    };
   }
 
   status() {
