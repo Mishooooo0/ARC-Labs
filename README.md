@@ -108,7 +108,7 @@ these has a mechanism.
 | Constraint | Mechanism |
 |---|---|
 | **Files are the source of truth** | The SQLite index (Phase 2) is derived. Delete `.arc/index.db`, reopen, lose nothing — and that is a gate, not a claim. |
-| **Obsidian compatibility both ways** | The real vault in `fixtures/vaults/etron` is the oracle. `.canvas` files round-trip byte-for-byte, including Obsidian's unstable per-node key order. |
+| **Obsidian compatibility both ways** | `fixtures/vaults/sample` is the oracle — Obsidian's exact output shape with invented content. `.canvas` files round-trip byte-for-byte, including Obsidian's unstable per-node key order. |
 | **Fully offline** | `arc-labs-core` has no network-capable dependency. Both shells set a CSP with `connect-src 'self'`, so the webview *refuses* rather than the code promising. |
 | **No silent agent writes** | Agent output is a proposal. The MCP server has no `note_write` tool — the operation does not exist. Audited against git by `cargo run -p xtask -- audit-agents`. |
 | **Immutable ledger** | Append-only JSONL per note; any note restores to any prior state. |

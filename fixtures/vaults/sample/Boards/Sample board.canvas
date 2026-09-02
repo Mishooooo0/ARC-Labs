@@ -1,0 +1,17 @@
+{
+	"nodes":[
+		{"id":"75a4f708ea95a139","x":-105,"y":-1503,"width":400,"height":400,"type":"file","file":"Notes/Alpha.md"},
+		{"id":"d9a077ef1fb364da","type":"file","file":"Notes/Beta.md","x":172,"y":619,"width":400,"height":400},
+		{"id":"4f130ab09b4e4b72","type":"file","file":"Notes/Empty.md","x":-880,"y":-100,"width":400,"height":400},
+		{"id":"4d2f6f14b1b2cbc2","type":"text","text":"# Sample board\n","x":-120,"y":-520,"width":386,"height":240,"color":"3"},
+		{"id":"de6c45e905827203","type":"link","url":"https://jsoncanvas.org","x":-600,"y":619,"width":400,"height":400},
+		{"id":"ebe86a5fb742ea0b","type":"group","label":"A group","x":640,"y":-100,"width":400,"height":400}
+	],
+	"edges":[
+		{"id":"2c1b308d9c0be4fd","fromNode":"4d2f6f14b1b2cbc2","fromSide":"bottom","toNode":"4f130ab09b4e4b72","toSide":"top"},
+		{"id":"bfbfe5327e3ee8d1","fromNode":"4d2f6f14b1b2cbc2","fromSide":"bottom","toNode":"ebe86a5fb742ea0b","toSide":"top"},
+		{"id":"1a650d1701039f4d","fromNode":"4d2f6f14b1b2cbc2","fromSide":"bottom","toNode":"de6c45e905827203","toSide":"top"},
+		{"id":"3d750de986fde21e","fromNode":"4d2f6f14b1b2cbc2","fromSide":"bottom","toNode":"d9a077ef1fb364da","toSide":"top"},
+		{"id":"6ee6b0fb96720b97","fromNode":"4d2f6f14b1b2cbc2","fromSide":"top","toNode":"75a4f708ea95a139","toSide":"bottom"}
+	]
+}

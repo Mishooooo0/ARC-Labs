@@ -1,0 +1,11 @@
+{
+	"nodes":[
+		{"id":"6069656767d23f30","type":"file","file":"Bare note.md","x":205,"y":-29,"width":153,"height":109},
+		{"id":"2a4eb57acda2afa2","type":"text","text":"# Outer\n","x":-40,"y":-280,"width":160,"height":50},
+		{"id":"ecd222a514f25e1b","type":"file","file":"Boards/Sample board.canvas","x":-160,"y":240,"width":400,"height":400}
+	],
+	"edges":[
+		{"id":"592edc848337dda5","fromNode":"2a4eb57acda2afa2","fromSide":"bottom","toNode":"6069656767d23f30","toSide":"top"},
+		{"id":"7b7d89b227d4ca8c","fromNode":"2a4eb57acda2afa2","fromSide":"bottom","toNode":"ecd222a514f25e1b","toSide":"top"}
+	]
+}

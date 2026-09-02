@@ -486,12 +486,20 @@ mod tests {
     }
 }
 
-/// **The Phase 4 compatibility gate**, run against the real files.
+/// **The Phase 4 compatibility gate.**
 ///
-/// These are the two `.canvas` files from the vault this was built against —
-/// written by Obsidian, not by a test. They are the oracle: if this crate can
-/// round-trip them byte for byte, it can round-trip what Obsidian actually
-/// writes, which is the only claim worth making.
+/// These two `.canvas` files reproduce, byte for byte, the formatting Obsidian
+/// actually emits: tab indent, LF, `"nodes":[` with no space, one compact node
+/// per line, no trailing newline — and the quirk that makes this a real test
+/// rather than a tautology, Obsidian's **unstable per-node key order**, where
+/// one node writes `id,x,y,width,height,type,file` and the next writes
+/// `id,type,file,x,y,width,height`.
+///
+/// They were transcribed from real Obsidian output and then given invented
+/// content, because the originals were a copy of the author's own vault and had
+/// no business in a public repository. Hand-written on purpose: serialising them
+/// with a JSON library would normalise the key order and the spacing, which is
+/// precisely what this fixture exists to catch.
 #[cfg(test)]
 mod real_fixtures {
     use super::*;
@@ -499,7 +507,7 @@ mod real_fixtures {
     /// Vault fixtures live at the repo root, three levels up from this crate.
     fn fixture(rel: &str) -> Option<String> {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../fixtures/vaults/etron")
+            .join("../../fixtures/vaults/sample")
             .join(rel);
         std::fs::read_to_string(path).ok()
     }
@@ -507,7 +515,7 @@ mod real_fixtures {
     #[test]
     fn the_real_obsidian_canvases_round_trip_byte_for_byte() {
         let mut checked = 0;
-        for name in ["ARC/ARC-OS.canvas", "Projects.canvas"] {
+        for name in ["Boards/Sample board.canvas", "Outer.canvas"] {
             let Some(source) = fixture(name) else {
                 continue;
             };
@@ -531,7 +539,7 @@ mod real_fixtures {
 
     #[test]
     fn moving_one_node_in_a_real_canvas_touches_only_that_node() {
-        let Some(source) = fixture("Projects.canvas") else {
+        let Some(source) = fixture("Outer.canvas") else {
             eprintln!("skipping: fixture not found");
             return;
         };
