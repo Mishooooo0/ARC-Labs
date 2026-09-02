@@ -6,6 +6,7 @@
 //! one implementation back four shells without four sets of bugs, and it is what
 //! makes "fully offline" a property of the dependency graph rather than a promise.
 
+pub mod atomic;
 pub mod config;
 pub mod error;
 pub mod fidelity;
@@ -21,4 +22,4 @@ pub use fidelity::{FileFidelity, LineEnding, NoteText};
 pub use markdown::{render, RenderedNote, WikiLink};
 pub use path::{VaultPath, VaultRoot};
 pub use tree::{Tree, TreeEntry};
-pub use vault::Vault;
+pub use vault::{Saved, Vault};

@@ -54,7 +54,14 @@
     <div class="meta data">
       <span class="path">{note.path}</span>
       <span>{note.size.toLocaleString()} B</span>
-      <span>{note.lineEnding}</span>
+      <span
+        class:warn={note.lineEndingsMixed}
+        title={note.lineEndingsMixed
+          ? `This file mixes CRLF and LF. Reading and re-saving it unchanged leaves it exactly as it is, but editing it will re-encode every line as ${note.lineEnding}.`
+          : ""}
+      >
+        {note.lineEnding}{note.lineEndingsMixed ? " · mixed" : ""}
+      </span>
       {#if note.links.length}<span>{note.links.length} links</span>{/if}
       {#if note.tags.length}<span>{note.tags.length} tags</span>{/if}
       {#if note.frontmatter}
@@ -118,6 +125,13 @@
   }
   .path {
     color: var(--arc-fg-dim);
+  }
+
+  /* A mixed-ending file will be normalised by the first real edit. Saying so is
+     cheaper than the user discovering it in a 200-line git diff. */
+  .warn {
+    color: var(--arc-warn);
+    cursor: help;
   }
 
   .fm-toggle {

@@ -74,6 +74,33 @@ pub struct NoteView {
     /// it is data.
     pub size: usize,
     pub line_ending: String,
+    /// True when the file mixes CRLF and LF.
+    ///
+    /// Surfaced rather than swallowed. A no-op save leaves such a file exactly
+    /// as it was, but a *real* edit re-encodes the whole document with the
+    /// dominant ending — the same thing VS Code and Obsidian do, because there
+    /// is no sane way to preserve an arbitrary mix through an arbitrary edit.
+    /// Silently rewriting every line of a file because the user changed one word
+    /// is the kind of thing a notebook has to say out loud.
+    pub line_endings_mixed: bool,
+    /// The note's raw markdown, for the editor. Absent from a read that only
+    /// needs to render.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// Content hash of the text as read. The editor sends it back on save, and
+    /// a mismatch means someone else wrote to the file in the meantime.
+    pub hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveResult {
+    /// False when the encoded bytes already matched what was on disk, so
+    /// nothing was written and mtime is untouched.
+    pub written: bool,
+    pub bytes: usize,
+    /// The note's hash after saving — the editor's new base for the next save.
+    pub hash: String,
 }
 
 /// A wikilink, flattened for the wire.

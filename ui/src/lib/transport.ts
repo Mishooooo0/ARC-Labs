@@ -16,7 +16,7 @@
  * whether the browser shell can do this too.
  */
 
-import type { DirListing, NoteView, Status, TreeView, VaultInfo } from "./types";
+import type { DirListing, NoteView, SaveResult, Status, TreeView, VaultInfo } from "./types";
 import { TransportError } from "./types";
 
 export interface Transport {
@@ -24,6 +24,13 @@ export interface Transport {
   status(): Promise<Status>;
   tree(): Promise<TreeView>;
   note(path: string): Promise<NoteView>;
+  /** Same as `note`, plus the raw markdown for the editor. */
+  noteForEdit(path: string): Promise<NoteView>;
+  /**
+   * Save. `baseHash` is the hash the editor started from; the server refuses
+   * rather than overwriting if the file changed underneath.
+   */
+  saveNote(path: string, text: string, baseHash: string): Promise<SaveResult>;
   browse(path?: string): Promise<DirListing>;
   openVault(path: string): Promise<VaultInfo>;
   /** Native folder picker. `null` in a browser, which has none. */
@@ -113,6 +120,15 @@ class ServerTransport implements Transport {
   note(path: string) {
     return this.#call<NoteView>(`note?path=${encodeURIComponent(path)}`);
   }
+  noteForEdit(path: string) {
+    return this.#call<NoteView>(`note/edit?path=${encodeURIComponent(path)}`);
+  }
+  saveNote(path: string, text: string, baseHash: string) {
+    return this.#call<SaveResult>("note/save", {
+      method: "POST",
+      body: JSON.stringify({ path, text, base_hash: baseHash }),
+    });
+  }
   browse(path?: string) {
     const q = path ? `?path=${encodeURIComponent(path)}` : "";
     return this.#call<DirListing>(`browse${q}`);
@@ -155,6 +171,12 @@ class DesktopTransport implements Transport {
   }
   note(path: string) {
     return this.#invoke<NoteView>("note", { path });
+  }
+  noteForEdit(path: string) {
+    return this.#invoke<NoteView>("note_for_edit", { path });
+  }
+  saveNote(path: string, text: string, baseHash: string) {
+    return this.#invoke<SaveResult>("save_note", { path, text, baseHash });
   }
   browse(path?: string) {
     return this.#invoke<DirListing>("browse", { path: path ?? null });

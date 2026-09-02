@@ -177,6 +177,18 @@ impl Api {
     }
 
     pub fn read_note(&self, path: &VaultPath) -> ApiResult<NoteView> {
+        self.read_note_inner(path, false)
+    }
+
+    /// Read a note including its raw markdown, for the editor.
+    ///
+    /// Separate from [`Self::read_note`] so a plain render never ships the
+    /// source over the wire twice.
+    pub fn read_note_for_edit(&self, path: &VaultPath) -> ApiResult<NoteView> {
+        self.read_note_inner(path, true)
+    }
+
+    fn read_note_inner(&self, path: &VaultPath, with_text: bool) -> ApiResult<NoteView> {
         self.with_vault(|v| {
             let note = v.read_note(path)?;
             let rendered = arc_labs_core::render(note.text());
@@ -194,6 +206,51 @@ impl Api {
                     LineEnding::Crlf => "CRLF",
                 }
                 .into(),
+                line_endings_mixed: note.fidelity().is_mixed(),
+                text: with_text.then(|| note.text().to_string()),
+                hash: note.content_hash(),
+            })
+        })
+    }
+
+    /// Save a note.
+    ///
+    /// `base_hash` is the hash the editor started from. When it does not match
+    /// what is on disk, the save is refused rather than applied: a vault is
+    /// frequently open in Obsidian, syncing over Syncthing, or being changed by
+    /// git at the same time, and silently discarding someone else's write is the
+    /// one failure mode a notebook must not have.
+    ///
+    /// Fidelity comes from the file as it is *now*, so line endings and BOM stay
+    /// the file's own even across an external change.
+    pub fn write_note(
+        &self,
+        path: &VaultPath,
+        text: &str,
+        base_hash: Option<&str>,
+    ) -> ApiResult<SaveResult> {
+        self.with_vault(|v| {
+            let current = v.read_note(path)?;
+            if let Some(base) = base_hash {
+                if current.content_hash() != base {
+                    return Err(ApiError::conflict());
+                }
+            }
+
+            let saved = v.write_note(path, &current, text)?;
+            // Hash the text we just committed to, so the editor's next save has
+            // the right base whether or not bytes were actually written.
+            let hash = arc_labs_core::NoteText::decode(text.as_bytes())
+                .map(|n| n.content_hash())
+                .unwrap_or_else(|| current.content_hash());
+
+            Ok(match saved {
+                arc_labs_core::Saved::Written { bytes } => {
+                    SaveResult { written: true, bytes, hash }
+                }
+                arc_labs_core::Saved::Unchanged => {
+                    SaveResult { written: false, bytes: 0, hash }
+                }
             })
         })
     }
@@ -307,6 +364,61 @@ mod tests {
         assert_eq!(n.line_ending, "LF");
         // Phase 0 has no index, so resolution is unknown — not guessed.
         assert_eq!(n.links[0].resolved, None);
+    }
+
+    #[test]
+    fn editing_returns_the_source_and_a_base_hash() {
+        let (_t, api) = api_with_vault(Capabilities::desktop());
+        let p = VaultPath::new("a.md").unwrap();
+
+        assert!(api.read_note(&p).unwrap().text.is_none(), "a render should not ship the source");
+
+        let edit = api.read_note_for_edit(&p).unwrap();
+        assert_eq!(edit.text.as_deref(), Some("# A\n\nlink to [[B]] #tag\n"));
+        assert!(edit.hash.starts_with("blake3:"));
+    }
+
+    #[test]
+    fn saving_unchanged_text_writes_nothing() {
+        let (_t, api) = api_with_vault(Capabilities::desktop());
+        let p = VaultPath::new("a.md").unwrap();
+        let note = api.read_note_for_edit(&p).unwrap();
+
+        let r = api.write_note(&p, note.text.as_deref().unwrap(), Some(&note.hash)).unwrap();
+        assert!(!r.written);
+        assert_eq!(r.hash, note.hash);
+    }
+
+    #[test]
+    fn saving_changed_text_writes_and_returns_a_new_base() {
+        let (_t, api) = api_with_vault(Capabilities::desktop());
+        let p = VaultPath::new("a.md").unwrap();
+        let note = api.read_note_for_edit(&p).unwrap();
+
+        let r = api.write_note(&p, "# A changed\n", Some(&note.hash)).unwrap();
+        assert!(r.written && r.bytes > 0);
+        assert_ne!(r.hash, note.hash);
+
+        // The returned hash is the right base for the next save.
+        assert!(api.write_note(&p, "# A changed again\n", Some(&r.hash)).is_ok());
+    }
+
+    #[test]
+    fn a_stale_base_hash_is_refused_rather_than_clobbering_the_other_writer() {
+        let (tmp, api) = api_with_vault(Capabilities::desktop());
+        let p = VaultPath::new("a.md").unwrap();
+        let note = api.read_note_for_edit(&p).unwrap();
+
+        // Someone else — Obsidian, Syncthing, git — writes to the same file.
+        std::fs::write(tmp.path().join("a.md"), b"# written by someone else\n").unwrap();
+
+        let err = api.write_note(&p, "# my version\n", Some(&note.hash)).unwrap_err();
+        assert_eq!(err.code, ErrorCode::Conflict);
+        // Their work is still there.
+        assert_eq!(
+            std::fs::read(tmp.path().join("a.md")).unwrap(),
+            b"# written by someone else\n"
+        );
     }
 
     #[test]

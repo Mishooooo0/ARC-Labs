@@ -48,6 +48,20 @@ export interface NoteView {
   tags: string[];
   size: number;
   lineEnding: string;
+  /** True when the file mixes CRLF and LF. */
+  lineEndingsMixed: boolean;
+  /** Raw markdown. Present only from `noteForEdit`. */
+  text?: string;
+  /** Content hash as read — sent back on save to detect an external write. */
+  hash: string;
+}
+
+export interface SaveResult {
+  /** False when the bytes already matched disk, so mtime is untouched. */
+  written: boolean;
+  bytes: number;
+  /** The new base hash for the next save. */
+  hash: string;
 }
 
 export interface TreeEntry {
@@ -90,6 +104,7 @@ export type ErrorCode =
   | "not_utf8"
   | "config"
   | "not_permitted"
+  | "conflict"
   | "io";
 
 export interface ApiError {

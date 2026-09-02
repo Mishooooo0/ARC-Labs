@@ -10,10 +10,12 @@
   import type { NoteView as Note, Status, TreeView } from "./lib/types";
   import { TransportError } from "./lib/types";
   import ArcMark from "./components/ArcMark.svelte";
+  import Editor, { type SaveState } from "./components/Editor.svelte";
   import EmptyState from "./components/EmptyState.svelte";
   import FileTree from "./components/FileTree.svelte";
   import FirstRun from "./components/FirstRun.svelte";
   import NoteViewer from "./components/NoteView.svelte";
+  import SaveStateBadge from "./components/SaveState.svelte";
   import VaultStatus from "./components/VaultStatus.svelte";
 
   const THEMES = ["arc-dark", "arc-light", "arc-terminal"] as const;
@@ -24,6 +26,12 @@
   let selected = $state<string | null>(null);
   let error = $state<string | null>(null);
   let theme = $state(localStorage.getItem("arc-labs-theme") ?? "arc-dark");
+
+  /** Read mode renders HTML; edit mode hands the source to CodeMirror. */
+  let editing = $state(false);
+  let saveState = $state<SaveState>("clean");
+  let saveDetail = $state<string | undefined>(undefined);
+  let editor = $state<ReturnType<typeof Editor> | null>(null);
 
   $effect(() => {
     document.documentElement.setAttribute("data-theme", theme);
@@ -38,8 +46,6 @@
     try {
       status = await transport.status();
       if (status.vault) {
-        // Scanning is a real state, not a spinner: the indicator says what the
-        // app is doing, and Phase 2 reuses the same signal for indexing.
         status = { ...status, status: "scanning" };
         tree = await transport.tree();
         status = { ...status, status: "online" };
@@ -54,13 +60,17 @@
   let isCanvas = $derived(selected?.toLowerCase().endsWith(".canvas") ?? false);
 
   async function openNote(path: string) {
+    // Drain any pending save before the editor unmounts, or the last 400 ms of
+    // typing in the previous note is lost on every click in the tree.
+    await editor?.flush();
+
     selected = path;
     error = null;
     note = null;
+    editing = false;
+    saveState = "clean";
+    saveDetail = undefined;
 
-    // A .canvas is JSONCanvas, not prose. Rendering it as a note would put a
-    // wall of JSON on screen and read as a bug. Phase 4 gives it a real editor;
-    // until then the surface says what the file is rather than mangling it.
     if (path.toLowerCase().endsWith(".canvas")) return;
 
     try {
@@ -70,14 +80,32 @@
     }
   }
 
-  /**
-   * A wikilink was clicked. Phase 0 has no index, so resolution is a direct
-   * lookup against the tree rather than a guess — and when nothing matches, the
-   * app says the note does not exist instead of inventing a destination.
-   */
+  async function toggleEdit() {
+    if (!selected || isCanvas) return;
+    error = null;
+
+    if (editing) {
+      await editor?.flush();
+      editing = false;
+      // Re-render from disk so read mode shows what was actually saved.
+      try {
+        note = await transport.note(selected);
+      } catch (e) {
+        error = message(e);
+      }
+      return;
+    }
+
+    try {
+      note = await transport.noteForEdit(selected);
+      editing = true;
+    } catch (e) {
+      error = message(e);
+    }
+  }
+
   function navigate(target: string, kind: "note" | "tag" | "embed") {
     if (kind === "tag") {
-      // Tag search arrives with the index in Phase 2. Saying so beats a dead click.
       error = `Searching by tag arrives in Phase 2 — #${target}`;
       return;
     }
@@ -97,14 +125,28 @@
     theme = THEMES[(i + 1) % THEMES.length] ?? "arc-dark";
   }
 
+  function onKey(e: KeyboardEvent) {
+    const mod = e.ctrlKey || e.metaKey;
+    if (mod && e.key === "e") {
+      e.preventDefault();
+      void toggleEdit();
+    }
+    // Saving is continuous, but the reflex is universal — honour it rather than
+    // letting the browser open a Save Page dialog over the top of the notebook.
+    if (mod && e.key === "s") {
+      e.preventDefault();
+      void editor?.flush();
+    }
+  }
+
   $effect(() => {
     void refresh();
   });
 </script>
 
+<svelte:window onkeydown={onKey} />
+
 {#if !status}
-  <!-- Pre-first-paint. Never a blank surface, even for the half second before
-       the first status call returns. -->
   <div class="boot">
     <ArcMark size={20} />
     <span class="data">starting…</span>
@@ -120,6 +162,12 @@
       </div>
       <VaultStatus status={status.status} name={status.vault.name} />
       <div class="spacer"></div>
+      <SaveStateBadge state={saveState} detail={saveDetail} />
+      {#if selected && !isCanvas}
+        <button class="mode data" class:active={editing} onclick={toggleEdit} title="⌘E">
+          {editing ? "editing" : "reading"}
+        </button>
+      {/if}
       <span class="data counts">
         {status.vault.noteCount.toLocaleString()} notes
         {#if status.vault.canvasCount}· {status.vault.canvasCount} canvases{/if}
@@ -144,7 +192,7 @@
 
       <main class="pane">
         {#if error}
-          <div class="banner" role="alert">
+          <div class="banner" class:bad={saveState === "conflict"} role="alert">
             <span>{error}</span>
             <button onclick={() => (error = null)} aria-label="Dismiss">×</button>
           </div>
@@ -156,6 +204,20 @@
             description="This is a canvas — a spatial board of cards and connections, stored as JSONCanvas. Canvases open in Phase 4; the file is untouched on disk."
             hint={selected ?? ""}
           />
+        {:else if editing && note?.text !== undefined}
+          {#key note.path}
+            <Editor
+              bind:this={editor}
+              path={note.path}
+              initialText={note.text}
+              baseHash={note.hash}
+              onstate={(s, d) => {
+                saveState = s;
+                saveDetail = d;
+              }}
+              onerror={(m) => (error = m)}
+            />
+          {/key}
         {:else if note}
           <NoteViewer {note} onnavigate={navigate} />
         {:else if tree && tree.note_count === 0}
@@ -168,7 +230,7 @@
           <EmptyState
             title="Nothing open"
             description="Choose a note from the left to read it. Everything stays plain markdown on disk."
-            hint="{tree?.note_count ?? 0} notes indexed · read-only in Phase 0"
+            hint="{tree?.note_count ?? 0} notes · ⌘E to edit"
           />
         {/if}
       </main>
@@ -222,16 +284,24 @@
     color: var(--arc-fg-faint);
   }
 
+  .mode,
   .theme {
     color: var(--arc-fg-faint);
     padding: 2px var(--arc-space-2);
     border: 1px solid var(--arc-line);
     border-radius: var(--arc-radius-sm);
-    transition: color var(--arc-dur-fast) var(--arc-ease);
+    transition:
+      color var(--arc-dur-fast) var(--arc-ease),
+      border-color var(--arc-dur-fast) var(--arc-ease);
   }
+  .mode:hover,
   .theme:hover {
     color: var(--arc-fg-dim);
     border-color: var(--arc-line-strong);
+  }
+  .mode.active {
+    color: var(--arc-accent);
+    border-color: var(--arc-accent-dim);
   }
 
   .body {
@@ -267,6 +337,9 @@
     border-bottom: 1px solid var(--arc-line);
     color: var(--arc-fg-dim);
     font-size: var(--arc-text-sm);
+  }
+  .banner.bad {
+    border-bottom-color: var(--arc-danger);
   }
   .banner button {
     color: var(--arc-fg-faint);

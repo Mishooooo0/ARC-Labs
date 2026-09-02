@@ -108,6 +108,7 @@ impl IntoResponse for WebError {
                 StatusCode::BAD_REQUEST
             }
             ErrorCode::NotPermitted => StatusCode::FORBIDDEN,
+            ErrorCode::Conflict => StatusCode::CONFLICT,
             ErrorCode::Config | ErrorCode::Io => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (status, Json(self.0)).into_response()
@@ -134,6 +135,8 @@ pub fn router(api: Arc<Api>, cfg: &ServerConfig) -> Router {
         .route("/status", get(status))
         .route("/tree", get(tree))
         .route("/note", get(note))
+        .route("/note/edit", get(note_for_edit))
+        .route("/note/save", post(save_note))
         .route("/browse", get(browse))
         .route("/vault/open", post(open_vault))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth))
@@ -212,6 +215,30 @@ async fn note(
     Query(q): Query<NoteQuery>,
 ) -> WebResult<arc_labs_api::NoteView> {
     Ok(Json(s.api.read_note(&q.path)?))
+}
+
+async fn note_for_edit(
+    State(s): State<Arc<AppState>>,
+    Query(q): Query<NoteQuery>,
+) -> WebResult<arc_labs_api::NoteView> {
+    Ok(Json(s.api.read_note_for_edit(&q.path)?))
+}
+
+#[derive(Deserialize)]
+struct SaveBody {
+    path: VaultPath,
+    text: String,
+    /// The hash the editor started from. Omitting it skips the conflict check,
+    /// which only a caller that genuinely means to overwrite should do.
+    #[serde(default)]
+    base_hash: Option<String>,
+}
+
+async fn save_note(
+    State(s): State<Arc<AppState>>,
+    Json(body): Json<SaveBody>,
+) -> WebResult<arc_labs_api::SaveResult> {
+    Ok(Json(s.api.write_note(&body.path, &body.text, body.base_hash.as_deref())?))
 }
 
 #[derive(Deserialize)]

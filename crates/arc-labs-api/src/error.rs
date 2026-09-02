@@ -29,6 +29,11 @@ pub enum ErrorCode {
     /// The operation exists but is switched off in this deployment — e.g.
     /// filesystem browsing on a server bound beyond loopback.
     NotPermitted,
+    /// The file changed on disk since the editor last read it. Refusing beats
+    /// silently discarding whatever the other writer did — and with Obsidian,
+    /// Syncthing or git all plausibly touching the same vault, "the other
+    /// writer" is a real person, not a hypothetical.
+    Conflict,
     Io,
 }
 
@@ -43,6 +48,13 @@ impl ApiError {
 
     pub fn not_permitted(what: &str) -> Self {
         ApiError::new(ErrorCode::NotPermitted, format!("{what} is not available in this mode"))
+    }
+
+    pub fn conflict() -> Self {
+        ApiError::new(
+            ErrorCode::Conflict,
+            "this note changed on disk since it was opened; reload before saving",
+        )
     }
 }
 

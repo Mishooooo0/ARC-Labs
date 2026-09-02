@@ -12,7 +12,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use arc_labs_api::{Api, ApiError, Capabilities, DirListing, NoteView, Status, TreeView, VaultInfo};
+use arc_labs_api::{
+    Api, ApiError, Capabilities, DirListing, NoteView, SaveResult, Status, TreeView, VaultInfo,
+};
 use arc_labs_core::{Config, VaultPath};
 use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
@@ -34,6 +36,21 @@ fn note(api: tauri::State<'_, Arc<Api>>, path: VaultPath) -> CmdResult<NoteView>
     // `path` deserialises through VaultPath, so containment is enforced before
     // this body runs — the same guarantee the HTTP shell gets, from one place.
     api.read_note(&path)
+}
+
+#[tauri::command]
+fn note_for_edit(api: tauri::State<'_, Arc<Api>>, path: VaultPath) -> CmdResult<NoteView> {
+    api.read_note_for_edit(&path)
+}
+
+#[tauri::command]
+fn save_note(
+    api: tauri::State<'_, Arc<Api>>,
+    path: VaultPath,
+    text: String,
+    base_hash: Option<String>,
+) -> CmdResult<SaveResult> {
+    api.write_note(&path, &text, base_hash.as_deref())
 }
 
 #[tauri::command]
@@ -95,6 +112,8 @@ fn main() {
             status,
             tree,
             note,
+            note_for_edit,
+            save_note,
             browse,
             open_vault,
             pick_folder
