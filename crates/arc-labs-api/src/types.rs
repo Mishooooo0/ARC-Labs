@@ -417,3 +417,17 @@ pub struct WeaveStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_pass: Option<arc_labs_weave::PassReport>,
 }
+
+/// What a delete did, so the surface can say where the note went.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Deleted {
+    pub path: VaultPath,
+    /// Absolute path of the trashed copy. Absent when the caller is not allowed
+    /// to learn the host's layout — a remote browser client, for instance.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trashed_to: Option<String>,
+    /// Always true. The note's history is intact and the bytes are in the trash;
+    /// the surface says so rather than implying the note is gone.
+    pub recoverable: bool,
+}

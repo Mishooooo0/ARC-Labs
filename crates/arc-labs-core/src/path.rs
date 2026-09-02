@@ -214,6 +214,37 @@ impl VaultRoot {
         Ok(real)
     }
 
+    /// Resolve for **creating** a file that does not exist yet.
+    ///
+    /// `resolve_existing` cannot help here — it canonicalises the target, and
+    /// the target is the thing we are about to make. So this canonicalises the
+    /// *parent* instead, which is what actually needs checking: a note at
+    /// `Notes/x.md` is safe if and only if `Notes/` really is inside the vault
+    /// after every symlink is followed. Creating a directory whose parent is a
+    /// symlink out of the vault is the hole this closes.
+    ///
+    /// Creates missing parent directories, because "new note in a new folder"
+    /// is an ordinary thing to want. Each level is checked as it is made.
+    pub fn resolve_for_create(&self, vp: &VaultPath) -> Result<PathBuf> {
+        let joined = self.join(vp);
+        let parent = joined
+            .parent()
+            .ok_or_else(|| Error::invalid(vp.as_str(), "path has no parent directory"))?;
+
+        if !parent.exists() {
+            std::fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
+        }
+        let real_parent = dunce::canonicalize(parent).map_err(|e| Error::io(parent, e))?;
+        if !real_parent.starts_with(&self.root) {
+            return Err(Error::PathEscapesVault(real_parent));
+        }
+
+        let name = joined
+            .file_name()
+            .ok_or_else(|| Error::invalid(vp.as_str(), "path has no file name"))?;
+        Ok(real_parent.join(name))
+    }
+
     /// Turn an absolute path into a [`VaultPath`], rejecting anything outside.
     pub fn relativize(&self, abs: &Path) -> Result<VaultPath> {
         let real = dunce::canonicalize(abs).map_err(|e| Error::io(abs, e))?;

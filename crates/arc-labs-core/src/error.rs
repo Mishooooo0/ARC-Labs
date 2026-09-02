@@ -29,6 +29,13 @@ pub enum Error {
     #[error("no such note: {0}")]
     NoteNotFound(String),
 
+    /// A create or rename would have landed on top of an existing file.
+    ///
+    /// An error rather than an overwrite. The overwrite would be silent data
+    /// loss, and the caller can always turn this into "Untitled 2".
+    #[error("{0} already exists")]
+    AlreadyExists(String),
+
     #[error("{path} is not valid UTF-8; ARC-LABS vaults are UTF-8 only")]
     NotUtf8 { path: String },
 
@@ -57,6 +64,7 @@ impl Error {
             Error::PathEscapesVault(_) => "path is outside the vault".into(),
             Error::InvalidVaultPath { reason, .. } => format!("invalid path: {reason}"),
             Error::NoteNotFound(rel) => format!("no such note: {rel}"),
+            Error::AlreadyExists(rel) => format!("{rel} already exists"),
             Error::NotUtf8 { path } => format!("{path} is not valid UTF-8"),
             Error::Config { reason, .. } => format!("config error: {reason}"),
             Error::Io { source, .. } => format!("io error: {}", source.kind()),

@@ -23,6 +23,10 @@ pub enum ErrorCode {
     VaultNotFound,
     NotADirectory,
     NoteNotFound,
+    /// A create or rename would have landed on an existing file. Its own code
+    /// because the surface handles it rather than reporting it: the answer is
+    /// another name, not an error dialog.
+    AlreadyExists,
     InvalidPath,
     NotUtf8,
     Config,
@@ -79,6 +83,7 @@ impl From<arc_labs_core::Error> for ApiError {
             E::VaultRootMissing(_) => ErrorCode::VaultNotFound,
             E::VaultRootNotDirectory(_) => ErrorCode::NotADirectory,
             E::NoteNotFound(_) => ErrorCode::NoteNotFound,
+            E::AlreadyExists(_) => ErrorCode::AlreadyExists,
             E::PathEscapesVault(_) | E::InvalidVaultPath { .. } => ErrorCode::InvalidPath,
             E::NotUtf8 { .. } => ErrorCode::NotUtf8,
             E::Config { .. } => ErrorCode::Config,

@@ -127,6 +127,102 @@ impl Vault {
         atomic::replace(&abs, &bytes)?;
         Ok(Saved::Written { bytes: bytes.len() })
     }
+
+    /// Create a new note.
+    ///
+    /// **Refuses to overwrite.** A create that silently replaced an existing
+    /// note because the names collided would be exactly the data loss this whole
+    /// product exists to prevent — and it would be invisible, because the
+    /// clobbered note's content simply would not be there any more. So the
+    /// collision is an error the caller has to handle, and the UI turns it into
+    /// "Untitled 2" rather than a lost note.
+    ///
+    /// New files are written LF with a trailing newline: the convention every
+    /// tool in this space uses, and the one that makes a fresh vault diff
+    /// cleanly. Existing files keep whatever they already had — that is
+    /// [`Self::write_note`]'s job, not this one's.
+    pub fn create_note(&self, path: &VaultPath, text: &str) -> Result<usize> {
+        let abs = self.root.resolve_for_create(path)?;
+        if abs.exists() {
+            return Err(Error::AlreadyExists(path.to_string()));
+        }
+
+        let mut body = text.replace("\r\n", "\n");
+        if !body.is_empty() && !body.ends_with('\n') {
+            body.push('\n');
+        }
+        let bytes = body.into_bytes();
+
+        // Atomic, like every other write: a create interrupted halfway should
+        // leave no file at all rather than half a note.
+        atomic::replace(&abs, &bytes)?;
+        Ok(bytes.len())
+    }
+
+    /// Move a note to a new path.
+    ///
+    /// Refuses to overwrite the destination, for the same reason `create_note`
+    /// does. The caller is responsible for moving the note's ledger alongside
+    /// it — see `Ledger::record_rename`.
+    pub fn rename_note(&self, from: &VaultPath, to: &VaultPath) -> Result<()> {
+        if from == to {
+            return Ok(());
+        }
+        let src = self.root.resolve_existing(from)?;
+        let dst = self.root.resolve_for_create(to)?;
+        if dst.exists() {
+            return Err(Error::AlreadyExists(to.to_string()));
+        }
+
+        std::fs::rename(&src, &dst).map_err(|e| Error::io(&src, e))?;
+        Ok(())
+    }
+
+    /// Delete a note — into the vault's trash, not into nothing.
+    ///
+    /// The ledger keeps the content and can restore it, so this could unlink.
+    /// It does not, because those are different guarantees: the ledger protects
+    /// you from a bad *edit*, and a copy on disk protects you from a bad
+    /// *click*, a corrupt ledger, or a version of this app that has a bug in its
+    /// restore path. Trash is cheap and the failure it prevents is permanent.
+    ///
+    /// Returns where the file went, so the caller can say so.
+    pub fn delete_note(&self, path: &VaultPath) -> Result<std::path::PathBuf> {
+        let abs = self.root.resolve_existing(path)?;
+
+        // Keyed by a hash of the relative path, matching how the ledger names
+        // its own files.
+        let key = blake3::hash(path.as_str().as_bytes()).to_hex();
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let dir = self.root.path().join(".arc").join("trash").join(&key[..16]);
+        std::fs::create_dir_all(&dir).map_err(|e| Error::io(&dir, e))?;
+
+        let name = abs
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "note.md".into());
+
+        // A second stamp is not unique: create-then-delete twice inside one
+        // second is a normal thing to do while tidying up, and the second copy
+        // would land on the first. Walk a counter until the name is free rather
+        // than trusting the clock — the whole point of the trash is that nothing
+        // in it gets overwritten.
+        let mut grave = dir.join(format!("{stamp}-{name}"));
+        let mut n = 1;
+        while grave.exists() {
+            grave = dir.join(format!("{stamp}-{n}-{name}"));
+            n += 1;
+        }
+
+        // Copy-then-remove rather than rename: the trash may be on a different
+        // volume from the note on some setups, and rename fails across volumes.
+        std::fs::copy(&abs, &grave).map_err(|e| Error::io(&abs, e))?;
+        std::fs::remove_file(&abs).map_err(|e| Error::io(&abs, e))?;
+        Ok(grave)
+    }
 }
 
 #[cfg(test)]
@@ -142,6 +238,137 @@ mod tests {
         }
         let v = Vault::open(tmp.path()).unwrap();
         (tmp, v)
+    }
+
+    fn vp(s: &str) -> VaultPath {
+        VaultPath::new(s).unwrap()
+    }
+
+    // ── create / rename / delete ────────────────────────────────────────────
+
+    #[test]
+    fn creating_a_note_writes_it_and_it_reads_back() {
+        let (_t, v) = vault_with(&[]);
+        let n = v.create_note(&vp("Notes/New.md"), "# New\n\nbody").unwrap();
+        assert!(n > 0);
+        assert_eq!(
+            v.read_note(&vp("Notes/New.md")).unwrap().text(),
+            "# New\n\nbody\n"
+        );
+    }
+
+    #[test]
+    fn creating_a_note_makes_the_folders_it_needs() {
+        // "New note in a new folder" is an ordinary thing to want.
+        let (_t, v) = vault_with(&[]);
+        v.create_note(&vp("a/b/c/Deep.md"), "x").unwrap();
+        assert!(v.exists(&vp("a/b/c/Deep.md")));
+    }
+
+    /// **The guard that matters.** Overwriting on create is silent data loss.
+    #[test]
+    fn creating_over_an_existing_note_is_refused_and_leaves_it_alone() {
+        let (_t, v) = vault_with(&[("Keep.md", b"# Precious\n")]);
+        let err = v
+            .create_note(&vp("Keep.md"), "# Replacement\n")
+            .unwrap_err();
+        assert!(matches!(err, Error::AlreadyExists(_)), "got {err:?}");
+        assert_eq!(v.read_note(&vp("Keep.md")).unwrap().text(), "# Precious\n");
+    }
+
+    #[test]
+    fn a_new_note_is_lf_with_a_trailing_newline() {
+        // A fresh vault should diff cleanly whatever platform made it.
+        let (t, v) = vault_with(&[]);
+        v.create_note(&vp("A.md"), "one\r\ntwo").unwrap();
+        let raw = std::fs::read(t.path().join("A.md")).unwrap();
+        assert_eq!(raw, b"one\ntwo\n");
+    }
+
+    #[test]
+    fn an_empty_new_note_stays_empty() {
+        // Zero-byte notes are real — the E-Tron vault has two. Do not invent a
+        // newline for a note the user deliberately left blank.
+        let (t, v) = vault_with(&[]);
+        v.create_note(&vp("Blank.md"), "").unwrap();
+        assert_eq!(std::fs::read(t.path().join("Blank.md")).unwrap(), b"");
+    }
+
+    #[test]
+    fn a_create_cannot_escape_the_vault() {
+        // The textual forms never become a VaultPath at all, so they cannot
+        // reach `create_note` — the type is the guard, on the create path as
+        // much as the read path.
+        for bad in ["../escape.md", "/etc/passwd", "C:\\Windows\\win.ini"] {
+            assert!(VaultPath::new(bad).is_err(), "accepted {bad}");
+        }
+
+        // And what does get created lands inside the root, parent directories
+        // included — `resolve_for_create` canonicalises the parent precisely so
+        // a deep create cannot be walked out of the vault.
+        let (t, v) = vault_with(&[]);
+        v.create_note(&vp("deep/deeper/x.md"), "x").unwrap();
+        let real = dunce::canonicalize(t.path().join("deep/deeper/x.md")).unwrap();
+        assert!(real.starts_with(dunce::canonicalize(t.path()).unwrap()));
+    }
+
+    #[test]
+    fn renaming_moves_the_note_and_keeps_the_bytes() {
+        let (_t, v) = vault_with(&[("Old.md", b"# Same\r\nbody\r\n")]);
+        let before = v.read_bytes(&vp("Old.md")).unwrap();
+        v.rename_note(&vp("Old.md"), &vp("Sub/New.md")).unwrap();
+
+        assert!(!v.exists(&vp("Old.md")));
+        // Byte-for-byte: a rename is not an edit, so CRLF stays CRLF.
+        assert_eq!(v.read_bytes(&vp("Sub/New.md")).unwrap(), before);
+    }
+
+    #[test]
+    fn renaming_onto_an_existing_note_is_refused() {
+        let (_t, v) = vault_with(&[("A.md", b"# A\n"), ("B.md", b"# B\n")]);
+        let err = v.rename_note(&vp("A.md"), &vp("B.md")).unwrap_err();
+        assert!(matches!(err, Error::AlreadyExists(_)), "got {err:?}");
+        // Both survive.
+        assert_eq!(v.read_note(&vp("A.md")).unwrap().text(), "# A\n");
+        assert_eq!(v.read_note(&vp("B.md")).unwrap().text(), "# B\n");
+    }
+
+    #[test]
+    fn renaming_a_note_to_itself_does_nothing() {
+        let (_t, v) = vault_with(&[("A.md", b"# A\n")]);
+        v.rename_note(&vp("A.md"), &vp("A.md")).unwrap();
+        assert_eq!(v.read_note(&vp("A.md")).unwrap().text(), "# A\n");
+    }
+
+    /// Deleting keeps the bytes. The ledger protects you from a bad edit; a copy
+    /// on disk protects you from a bad click.
+    #[test]
+    fn deleting_a_note_moves_it_to_the_trash() {
+        let (_t, v) = vault_with(&[("Gone.md", b"# Gone\nbut not lost\n")]);
+        let grave = v.delete_note(&vp("Gone.md")).unwrap();
+
+        assert!(!v.exists(&vp("Gone.md")));
+        assert!(grave.exists(), "nothing landed in the trash");
+        assert_eq!(std::fs::read(&grave).unwrap(), b"# Gone\nbut not lost\n");
+        assert!(grave.to_string_lossy().contains("trash"));
+    }
+
+    #[test]
+    fn deleting_twice_does_not_clobber_the_first_copy() {
+        let (_t, v) = vault_with(&[("X.md", b"first\n")]);
+        let a = v.delete_note(&vp("X.md")).unwrap();
+        v.create_note(&vp("X.md"), "second").unwrap();
+        // Same second, so the timestamp alone would collide.
+        let b = v.delete_note(&vp("X.md")).unwrap();
+
+        assert_eq!(std::fs::read(&a).unwrap(), b"first\n");
+        assert_eq!(std::fs::read(&b).unwrap(), b"second\n");
+    }
+
+    #[test]
+    fn deleting_a_note_that_is_not_there_is_a_clean_error() {
+        let (_t, v) = vault_with(&[]);
+        assert!(v.delete_note(&vp("Nope.md")).is_err());
     }
 
     #[test]

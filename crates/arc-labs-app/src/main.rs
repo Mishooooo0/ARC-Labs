@@ -220,6 +220,39 @@ fn index_stats(api: tauri::State<'_, Arc<Api>>) -> CmdResult<Q::IndexStats> {
     api.index_stats()
 }
 
+// --- Note lifecycle ---------------------------------------------------------
+
+#[tauri::command]
+fn create_note(
+    api: tauri::State<'_, Arc<Api>>,
+    path: VaultPath,
+    text: Option<String>,
+) -> CmdResult<arc_labs_api::NoteView> {
+    api.create_note(&path, text.as_deref().unwrap_or_default())
+}
+
+#[tauri::command]
+fn rename_note(
+    api: tauri::State<'_, Arc<Api>>,
+    from: VaultPath,
+    to: VaultPath,
+) -> CmdResult<arc_labs_api::NoteView> {
+    api.rename_note(&from, &to)
+}
+
+#[tauri::command]
+fn delete_note(
+    api: tauri::State<'_, Arc<Api>>,
+    path: VaultPath,
+) -> CmdResult<arc_labs_api::Deleted> {
+    api.delete_note(&path)
+}
+
+#[tauri::command]
+fn unique_path(api: tauri::State<'_, Arc<Api>>, q: String) -> CmdResult<VaultPath> {
+    api.unique_note_path(&q)
+}
+
 // --- Phase 6 ---------------------------------------------------------------
 
 #[tauri::command]
@@ -381,6 +414,10 @@ fn main() {
             browse,
             open_vault,
             pick_folder,
+            create_note,
+            rename_note,
+            delete_note,
+            unique_path,
             suggestions,
             accept_suggestion,
             dismiss_suggestion,

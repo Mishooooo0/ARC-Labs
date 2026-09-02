@@ -18,7 +18,7 @@
 
 import type {
   Backlink, CanvasRunnability, CanvasView, DirListing, EntryDiff, GraphData, IndexStats,
-  LinkSuggestion, NodeGeometry, NoteRef, NoteView, OutgoingLink, PassReport, Proposal, RunStatus,
+  Deleted, LinkSuggestion, NodeGeometry, NoteRef, NoteView, OutgoingLink, PassReport, Proposal, RunStatus,
   SaveResult, SearchHit, Status, TagCount, TimelineEntry, TreeView, UnresolvedLink, VaultInfo,
   WeaveStatus,
 } from "./types";
@@ -36,6 +36,16 @@ export interface Transport {
    * rather than overwriting if the file changed underneath.
    */
   saveNote(path: string, text: string, baseHash: string): Promise<SaveResult>;
+
+  // ── Note lifecycle ────────────────────────────────────────────────────
+  /** Create a note and return it open. Refuses to overwrite. */
+  createNote(path: string, text?: string): Promise<NoteView>;
+  /** Move a note. Its history goes with it. */
+  renameNote(from: string, to: string): Promise<NoteView>;
+  /** Delete to the vault trash. History is kept. */
+  deleteNote(path: string): Promise<Deleted>;
+  /** A free path near `desired`, so a collision becomes "Untitled 2". */
+  uniquePath(desired: string): Promise<string>;
   // ── Runtime (Phase 5) ─────────────────────────────────────────────────────
   runnability(path: string): Promise<CanvasRunnability>;
   startRun(path: string, node: string, approveEgress?: boolean): Promise<string>;
@@ -271,6 +281,28 @@ class ServerTransport implements Transport {
     return this.#call<IndexStats>("index-stats");
   }
 
+  createNote(path: string, text = "") {
+    return this.#call<NoteView>("note/create", {
+      method: "POST",
+      body: JSON.stringify({ path, text }),
+    });
+  }
+  renameNote(from: string, to: string) {
+    return this.#call<NoteView>("note/rename", {
+      method: "POST",
+      body: JSON.stringify({ from, to }),
+    });
+  }
+  deleteNote(path: string) {
+    return this.#call<Deleted>("note/delete", {
+      method: "POST",
+      body: JSON.stringify({ path }),
+    });
+  }
+  uniquePath(desired: string) {
+    return this.#call<string>(`note/unique-path?q=${encodeURIComponent(desired)}`);
+  }
+
   suggestions(limit = 50) {
     return this.#call<LinkSuggestion[]>(`suggestions?limit=${limit}`);
   }
@@ -417,6 +449,19 @@ class DesktopTransport implements Transport {
   }
   indexStats() {
     return this.#invoke<IndexStats>("index_stats");
+  }
+
+  createNote(path: string, text = "") {
+    return this.#invoke<NoteView>("create_note", { path, text });
+  }
+  renameNote(from: string, to: string) {
+    return this.#invoke<NoteView>("rename_note", { from, to });
+  }
+  deleteNote(path: string) {
+    return this.#invoke<Deleted>("delete_note", { path });
+  }
+  uniquePath(desired: string) {
+    return this.#invoke<string>("unique_path", { q: desired });
   }
 
   suggestions(limit = 50) {

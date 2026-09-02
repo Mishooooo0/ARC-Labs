@@ -29,6 +29,7 @@
   import FileTree from "./components/FileTree.svelte";
   import FirstRun from "./components/FirstRun.svelte";
   import Graph from "./components/Graph.svelte";
+  import Ask from "./components/Ask.svelte";
   import Home from "./components/Home.svelte";
   import Inbox from "./components/Inbox.svelte";
   import NoteViewer from "./components/NoteView.svelte";
@@ -75,6 +76,18 @@
   let weave = $state<WeaveStatus | null>(null);
   let weaveBusy = $state<number | null>(null);
   let weaveWorking = $state(false);
+
+  // The one dialog. `askKind` decides what confirming does, so a stale callback
+  // from a dismissed dialog cannot fire against the wrong note.
+  type AskKind = "create" | "rename" | "delete";
+  let askOpen = $state(false);
+  let askKind = $state<AskKind>("create");
+  let askTitle = $state("");
+  let askDetail = $state<string | undefined>(undefined);
+  let askValue = $state<string | undefined>(undefined);
+  let askConfirm = $state("OK");
+  let askDanger = $state(false);
+  let askTarget = $state<string | null>(null);
 
   let searchQuery = $state("");
   let searchHits = $state<SearchHit[]>([]);
@@ -448,6 +461,107 @@
     }
   }
 
+  // ── Note lifecycle ─────────────────────────────────────────────────────
+
+  /**
+   * Ask for a name, pre-filled with a free one.
+   *
+   * `folder` comes from wherever the user was: a new note made while reading
+   * `Daily/2026-09-03.md` belongs in `Daily/`, not at the vault root. Guessing
+   * that correctly is the difference between a feature and a chore.
+   */
+  async function newNote(folder?: string) {
+    const dir = folder ?? (selected?.includes("/") ? selected.slice(0, selected.lastIndexOf("/")) : "");
+    const base = dir ? `${dir}/Untitled` : "Untitled";
+    let suggestion = `${base}.md`;
+    try {
+      suggestion = await transport.uniquePath(base);
+    } catch {
+      // No index or no vault yet — the create call will report the real problem.
+    }
+    askKind = "create";
+    askTitle = "New note";
+    askDetail = undefined;
+    askValue = suggestion;
+    askConfirm = "Create";
+    askDanger = false;
+    askTarget = null;
+    askOpen = true;
+  }
+
+  function renameNote(path?: string) {
+    const target = path ?? selected;
+    if (!target) return;
+    askKind = "rename";
+    askTitle = "Rename note";
+    askDetail = "Its history comes with it.";
+    askValue = target;
+    askConfirm = "Rename";
+    askDanger = false;
+    askTarget = target;
+    askOpen = true;
+  }
+
+  function deleteNote(path?: string) {
+    const target = path ?? selected;
+    if (!target) return;
+    askKind = "delete";
+    askTitle = `Delete ${target.split("/").pop()}?`;
+    // Say what is actually true. It is recoverable, and saying so is the
+    // difference between a confident click and a nervous one.
+    askDetail = "The file moves to the vault's trash and its history is kept, so this can be undone.";
+    askValue = undefined;
+    askConfirm = "Delete";
+    askDanger = true;
+    askTarget = target;
+    askOpen = true;
+  }
+
+  async function askConfirmed(answer: string) {
+    askOpen = false;
+    error = null;
+    try {
+      if (askKind === "create") {
+        const path = answer.endsWith(".md") ? answer : `${answer}.md`;
+        const created = await transport.createNote(path, "");
+        await refreshTree();
+        await openNote(path);
+        // Straight into the editor: you asked for a new note in order to write.
+        if (!editing) await toggleEdit();
+        void created;
+      } else if (askKind === "rename" && askTarget) {
+        const to = answer.endsWith(".md") ? answer : `${answer}.md`;
+        await transport.renameNote(askTarget, to);
+        await refreshTree();
+        await openNote(to);
+      } else if (askKind === "delete" && askTarget) {
+        const gone = askTarget;
+        const out = await transport.deleteNote(gone);
+        await refreshTree();
+        if (selected === gone) {
+          selected = null;
+          note = null;
+          view = "home";
+        }
+        error = out.recoverable
+          ? `Deleted ${gone.split("/").pop()} — its history is kept, so it can be restored.`
+          : null;
+      }
+      void loadIndex();
+    } catch (e) {
+      error = message(e);
+    }
+  }
+
+  async function refreshTree() {
+    try {
+      tree = await transport.tree();
+      status = await transport.status();
+    } catch (e) {
+      error = message(e);
+    }
+  }
+
   async function openGraph() {
     view = "graph";
     if (graphData || graphLoading) return;
@@ -496,6 +610,18 @@
   }
 
   let commands = $derived<Command[]>([
+    { id: "new", label: "New note", hint: "⌘N", run: () => void newNote() },
+    {
+      id: "rename",
+      label: selected ? `Rename ${selected.split("/").pop()}` : "Rename this note",
+      hint: "F2",
+      run: () => renameNote(),
+    },
+    {
+      id: "delete",
+      label: selected ? `Delete ${selected.split("/").pop()}` : "Delete this note",
+      run: () => deleteNote(),
+    },
     { id: "home", label: "Go home", hint: "⌘⇧H", run: () => (view = "home") },
     { id: "search", label: "Search vault", hint: "⌘⇧F", run: () => void openSearch() },
     { id: "graph", label: "Open graph", hint: "⌘⇧G", run: () => void openGraph() },
@@ -530,6 +656,14 @@
   ]);
 
   function onKey(e: KeyboardEvent) {
+    // F2 carries no modifier, so it is checked before the modifier gate. It is
+    // also the one shortcut a Windows user reaches for without being told.
+    if (e.key === "F2" && !e.ctrlKey && !e.metaKey && selected && !isCanvas) {
+      e.preventDefault();
+      renameNote();
+      return;
+    }
+
     const mod = e.ctrlKey || e.metaKey;
     if (!mod) return;
     const k = e.key.toLowerCase();
@@ -575,6 +709,11 @@
     if (e.shiftKey && k === "t") {
       e.preventDefault();
       showTimeline = !showTimeline;
+      return;
+    }
+    if (k === "n" && !e.shiftKey) {
+      e.preventDefault();
+      void newNote();
       return;
     }
     if (k === "e" && !e.shiftKey) {
@@ -649,12 +788,18 @@
 
     <div class="body">
       <aside class="sidebar">
+        <div class="sidehead">
+          <span class="data label">notes</span>
+          <button class="new" onclick={() => void newNote()} title="New note · ⌘N">+</button>
+        </div>
         {#if tree && tree.entries.length}
           <FileTree {tree} {selected} onselect={openNote} />
         {:else if tree}
           <EmptyState
             title="This vault is empty"
-            description="Add a markdown file to the folder and it will appear here."
+            description="Make the first note, or drop a markdown file into the folder."
+            actionLabel="New note"
+            onaction={() => void newNote()}
             hint={status.vault.path ?? ""}
           />
         {/if}
@@ -829,6 +974,17 @@
   </div>
 
   <Palette bind:open={paletteOpen} bind:mode={paletteMode} {commands} onopen={openNote} />
+
+  <Ask
+    bind:open={askOpen}
+    bind:value={askValue}
+    title={askTitle}
+    detail={askDetail}
+    confirmLabel={askConfirm}
+    danger={askDanger}
+    onconfirm={(v) => void askConfirmed(v)}
+    oncancel={() => (askOpen = false)}
+  />
 {/if}
 
 <style>
@@ -874,6 +1030,32 @@
 
   .spacer {
     flex: 1;
+  }
+
+  .sidehead {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--arc-space-2) var(--arc-space-3);
+    border-bottom: 1px solid var(--arc-line);
+  }
+  .sidehead .label {
+    color: var(--arc-fg-faint);
+    font-size: var(--arc-text-xs);
+    letter-spacing: 0.06em;
+  }
+  .sidehead .new {
+    color: var(--arc-fg-dim);
+    font-size: var(--arc-text-lg);
+    line-height: 1;
+    padding: 0 var(--arc-space-2);
+    border-radius: var(--arc-radius-sm);
+    transition: color var(--arc-dur-fast) var(--arc-ease),
+      background var(--arc-dur-fast) var(--arc-ease);
+  }
+  .sidehead .new:hover {
+    color: var(--arc-fg);
+    background: var(--arc-bg-3);
   }
 
   .views {

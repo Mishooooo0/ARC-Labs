@@ -108,7 +108,8 @@ impl IntoResponse for WebError {
                 StatusCode::BAD_REQUEST
             }
             ErrorCode::NotPermitted => StatusCode::FORBIDDEN,
-            ErrorCode::Conflict => StatusCode::CONFLICT,
+            // Both mean "the thing you asked for clashes with what is there".
+            ErrorCode::Conflict | ErrorCode::AlreadyExists => StatusCode::CONFLICT,
             ErrorCode::Config | ErrorCode::Io => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (status, Json(self.0)).into_response()
@@ -140,6 +141,10 @@ pub fn router(api: Arc<Api>, cfg: &ServerConfig) -> Router {
         .route("/note", get(note))
         .route("/note/edit", get(note_for_edit))
         .route("/note/save", post(save_note))
+        .route("/note/create", post(create_note))
+        .route("/note/rename", post(rename_note))
+        .route("/note/delete", post(delete_note))
+        .route("/note/unique-path", get(unique_path))
         .route("/canvas", get(canvas))
         .route("/canvas/runnable", get(runnability))
         .route("/run", post(start_run))
@@ -289,6 +294,61 @@ async fn save_note(
     .await
     .map_err(|e| ApiError::new(ErrorCode::Io, e.to_string()))??;
     Ok(Json(saved))
+}
+
+#[derive(Deserialize)]
+struct CreateBody {
+    path: VaultPath,
+    #[serde(default)]
+    text: String,
+}
+
+/// Create a note. On a blocking thread with the other write paths.
+async fn create_note(
+    State(s): State<Arc<AppState>>,
+    Json(body): Json<CreateBody>,
+) -> WebResult<arc_labs_api::NoteView> {
+    let api = s.api.clone();
+    let view = tokio::task::spawn_blocking(move || api.create_note(&body.path, &body.text))
+        .await
+        .map_err(|e| ApiError::new(ErrorCode::Io, e.to_string()))??;
+    Ok(Json(view))
+}
+
+#[derive(Deserialize)]
+struct RenameBody {
+    from: VaultPath,
+    to: VaultPath,
+}
+
+async fn rename_note(
+    State(s): State<Arc<AppState>>,
+    Json(body): Json<RenameBody>,
+) -> WebResult<arc_labs_api::NoteView> {
+    let api = s.api.clone();
+    let view = tokio::task::spawn_blocking(move || api.rename_note(&body.from, &body.to))
+        .await
+        .map_err(|e| ApiError::new(ErrorCode::Io, e.to_string()))??;
+    Ok(Json(view))
+}
+
+async fn delete_note(
+    State(s): State<Arc<AppState>>,
+    Json(body): Json<NoteQuery>,
+) -> WebResult<arc_labs_api::Deleted> {
+    let api = s.api.clone();
+    let out = tokio::task::spawn_blocking(move || api.delete_note(&body.path))
+        .await
+        .map_err(|e| ApiError::new(ErrorCode::Io, e.to_string()))??;
+    Ok(Json(out))
+}
+
+/// A free path near a desired name, so the UI never has to show a collision.
+async fn unique_path(
+    State(s): State<Arc<AppState>>,
+    Query(q): Query<TextQuery>,
+) -> WebResult<VaultPath> {
+    Ok(Json(s.api.unique_note_path(&q.q)?))
 }
 
 async fn runnability(

@@ -379,3 +379,11 @@ export interface WeaveStatus {
   coolingSecs: number;
   lastPass?: PassReport;
 }
+
+/** What a delete did. `recoverable` is always true — the surface says so. */
+export interface Deleted {
+  path: string;
+  /** Where the bytes went. Absent when the client may not see host paths. */
+  trashedTo?: string;
+  recoverable: boolean;
+}

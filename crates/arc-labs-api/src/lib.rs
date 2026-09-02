@@ -333,6 +333,141 @@ impl Api {
         Ok(result)
     }
 
+    // ── Note lifecycle ──────────────────────────────────────────────────────
+    //
+    // The ledger ops these use — `Create`, `Rename`, `Delete` — were built in
+    // Phase 3 and had no caller until now. Nothing new was needed underneath;
+    // the notebook simply had no way to say "new note".
+
+    /// Create a note and open it.
+    ///
+    /// Refuses to overwrite. The caller gets `AlreadyExists` and is expected to
+    /// pick another name — [`Api::unique_note_path`] does that for the UI.
+    pub fn create_note(&self, path: &VaultPath, text: &str) -> ApiResult<NoteView> {
+        self.note_user_activity();
+        self.with_vault(|v| Ok(v.create_note(path, text)?))?;
+
+        if let Err(e) = self.ledger().and_then(|l| {
+            l.record_change(
+                path,
+                self.human(),
+                arc_labs_ledger::Op::Create,
+                "created",
+                None,
+                Some(text),
+            )
+            .map_err(ledger_err)
+        }) {
+            tracing::warn!(error = %e, path = %path, "could not record the creation");
+        }
+
+        if let Err(e) = self.reindex_note(path) {
+            tracing::warn!(error = %e, path = %path, "could not index the new note");
+        }
+        self.read_note_for_edit(path)
+    }
+
+    /// A free path near `desired`, so a name collision becomes "Untitled 2"
+    /// rather than an error the user has to think about.
+    pub fn unique_note_path(&self, desired: &str) -> ApiResult<VaultPath> {
+        let base = desired.strip_suffix(".md").unwrap_or(desired).to_string();
+        let first = VaultPath::new(format!("{base}.md")).map_err(ApiError::from)?;
+        if !self.with_vault(|v| Ok(v.exists(&first)))? {
+            return Ok(first);
+        }
+        for n in 2..1000 {
+            let candidate = VaultPath::new(format!("{base} {n}.md")).map_err(ApiError::from)?;
+            if !self.with_vault(|v| Ok(v.exists(&candidate)))? {
+                return Ok(candidate);
+            }
+        }
+        Err(ApiError::new(
+            ErrorCode::InvalidPath,
+            "could not find a free name for this note",
+        ))
+    }
+
+    /// Move a note, taking its history with it.
+    ///
+    /// `Ledger::record_rename` migrates the note's ledger file across the
+    /// relpath key change and records the old path, so the timeline stays
+    /// continuous — that was built and gated in Phase 3 and never called.
+    pub fn rename_note(&self, from: &VaultPath, to: &VaultPath) -> ApiResult<NoteView> {
+        self.note_user_activity();
+        if from == to {
+            return self.read_note_for_edit(from);
+        }
+
+        // Read before the move: the ledger entry records the content the note
+        // had at the moment it was renamed, and after the move this path is gone.
+        let content = self
+            .with_vault(|v| Ok(v.read_note(from)?))
+            .map(|n| n.text().to_string())
+            .unwrap_or_default();
+
+        self.with_vault(|v| Ok(v.rename_note(from, to)?))?;
+
+        if let Err(e) = self.ledger().and_then(|l| {
+            l.record_rename(from, to, self.human(), &content)
+                .map_err(ledger_err)
+        }) {
+            tracing::warn!(error = %e, "could not record the rename");
+        }
+
+        // Both paths change in the index: the old one goes, the new one arrives.
+        // Links *to* this note are resolved by name at query time, so a rename
+        // can turn resolved links into unresolved ones — which is true, and the
+        // unresolved-links list is where the user finds out.
+        if let Some(index) = self.index.lock().expect("index lock poisoned").as_ref() {
+            let _ = index.forget_note(from);
+        }
+        if let Err(e) = self.reindex_note(to) {
+            tracing::warn!(error = %e, path = %to, "could not index the renamed note");
+        }
+        self.read_note_for_edit(to)
+    }
+
+    /// Delete a note. The bytes go to the vault's trash; the history stays.
+    ///
+    /// Deliberately **not** `Ledger::forget`. The ledger is how a deleted note
+    /// is restored, so purging it here would delete the recovery path along with
+    /// the note — the opposite of what "recoverable" means. `forget` exists for
+    /// a permanent purge, which is a different, louder operation.
+    pub fn delete_note(&self, path: &VaultPath) -> ApiResult<Deleted> {
+        self.note_user_activity();
+        let content = self
+            .with_vault(|v| Ok(v.read_note(path)?))
+            .map(|n| n.text().to_string())
+            .unwrap_or_default();
+
+        let grave = self.with_vault(|v| Ok(v.delete_note(path)?))?;
+
+        if let Err(e) = self.ledger().and_then(|l| {
+            l.record_change(
+                path,
+                self.human(),
+                arc_labs_ledger::Op::Delete,
+                "deleted",
+                Some(&content),
+                None,
+            )
+            .map_err(ledger_err)
+        }) {
+            tracing::warn!(error = %e, path = %path, "could not record the deletion");
+        }
+
+        if let Some(index) = self.index.lock().expect("index lock poisoned").as_ref() {
+            let _ = index.forget_note(path);
+        }
+
+        Ok(Deleted {
+            path: path.clone(),
+            // Only shown where absolute paths are allowed to be shown at all.
+            trashed_to: self.caps.expose_paths.then(|| grave.display().to_string()),
+            recoverable: true,
+        })
+    }
+
     pub fn config(&self) -> Config {
         self.state
             .read()
@@ -1104,6 +1239,152 @@ mod tests {
         let api = Api::new(Config::default(), None, caps);
         api.open_vault(tmp.path()).unwrap();
         (tmp, api)
+    }
+
+    fn vp(s: &str) -> VaultPath {
+        VaultPath::new(s).unwrap()
+    }
+
+    // ── Note lifecycle ──────────────────────────────────────────────────────
+
+    #[test]
+    fn creating_a_note_ledgers_it_and_returns_it_open() {
+        let (_t, api) = api_with_vault(Capabilities::desktop());
+        let view = api.create_note(&vp("Notes/Fresh.md"), "# Fresh\n").unwrap();
+
+        assert_eq!(view.text.as_deref(), Some("# Fresh\n"));
+        assert!(
+            !view.hash.is_empty(),
+            "the editor needs a base hash to save against"
+        );
+
+        let timeline = api.timeline(&vp("Notes/Fresh.md")).unwrap();
+        assert_eq!(timeline.len(), 1);
+        assert_eq!(timeline[0].op, "create");
+        assert_eq!(timeline[0].actor_kind, "human");
+        assert!(timeline[0].touched_file);
+    }
+
+    #[test]
+    fn a_name_collision_becomes_another_name_rather_than_an_error() {
+        let (_t, api) = api_with_vault(Capabilities::desktop());
+        assert_eq!(
+            api.unique_note_path("Untitled").unwrap().as_str(),
+            "Untitled.md"
+        );
+
+        api.create_note(&vp("Untitled.md"), "").unwrap();
+        assert_eq!(
+            api.unique_note_path("Untitled").unwrap().as_str(),
+            "Untitled 2.md"
+        );
+
+        api.create_note(&vp("Untitled 2.md"), "").unwrap();
+        assert_eq!(
+            api.unique_note_path("Untitled").unwrap().as_str(),
+            "Untitled 3.md"
+        );
+    }
+
+    #[test]
+    fn creating_over_an_existing_note_reports_a_code_the_ui_can_act_on() {
+        let (_t, api) = api_with_vault(Capabilities::desktop());
+        let err = api.create_note(&vp("a.md"), "# Replacement\n").unwrap_err();
+        assert_eq!(err.code, ErrorCode::AlreadyExists);
+        // And the original is untouched.
+        assert_eq!(
+            api.read_note_for_edit(&vp("a.md")).unwrap().text.unwrap(),
+            "# A\n\nlink to [[B]] #tag\n"
+        );
+    }
+
+    #[test]
+    fn a_new_note_is_searchable_without_a_rebuild() {
+        let (_t, api) = api_with_vault(Capabilities::desktop());
+        api.open_index(false).unwrap();
+        api.create_note(&vp("Findable.md"), "# Findable\n\nquixotic content\n")
+            .unwrap();
+
+        let hits = api.search("quixotic", 10).unwrap();
+        assert_eq!(hits.len(), 1, "a note you just made should be findable");
+        assert_eq!(hits[0].path, "Findable.md");
+    }
+
+    /// **The Phase 3 machinery finally called.** History follows the note.
+    #[test]
+    fn renaming_carries_the_history_across() {
+        let (_t, api) = api_with_vault(Capabilities::desktop());
+        let n = api.read_note_for_edit(&vp("a.md")).unwrap();
+        api.write_note(&vp("a.md"), "# A\n\nedited once\n", Some(&n.hash))
+            .unwrap();
+
+        api.rename_note(&vp("a.md"), &vp("Archive/renamed.md"))
+            .unwrap();
+
+        let timeline = api.timeline(&vp("Archive/renamed.md")).unwrap();
+        assert!(
+            timeline.iter().any(|e| e.op == "edit"),
+            "the edit made before the rename should still be in the history: {timeline:?}"
+        );
+        assert!(timeline.iter().any(|e| e.op == "rename"));
+        assert!(api.timeline(&vp("a.md")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn renaming_updates_what_search_knows() {
+        let (_t, api) = api_with_vault(Capabilities::desktop());
+        api.open_index(false).unwrap();
+        api.rename_note(&vp("a.md"), &vp("moved.md")).unwrap();
+
+        let paths: Vec<String> = api
+            .search("link", 10)
+            .unwrap()
+            .into_iter()
+            .map(|h| h.path)
+            .collect();
+        assert!(paths.contains(&"moved.md".to_string()), "got {paths:?}");
+        assert!(
+            !paths.contains(&"a.md".to_string()),
+            "the old path is still indexed"
+        );
+    }
+
+    #[test]
+    fn deleting_keeps_the_bytes_and_the_history() {
+        let (_t, api) = api_with_vault(Capabilities::desktop());
+        let out = api.delete_note(&vp("a.md")).unwrap();
+
+        assert!(out.recoverable);
+        let grave = std::path::PathBuf::from(out.trashed_to.expect("desktop may see paths"));
+        assert!(grave.exists(), "the bytes should be in the trash");
+
+        // The history survives, which is what makes "recoverable" true.
+        let timeline = api.timeline(&vp("a.md")).unwrap();
+        assert!(timeline.iter().any(|e| e.op == "delete"));
+        assert!(!timeline.is_empty(), "deleting must not purge the ledger");
+    }
+
+    #[test]
+    fn a_deleted_note_leaves_the_search_index() {
+        let (_t, api) = api_with_vault(Capabilities::desktop());
+        api.open_index(false).unwrap();
+        assert_eq!(api.search("link", 10).unwrap().len(), 1);
+
+        api.delete_note(&vp("a.md")).unwrap();
+        assert!(
+            api.search("link", 10).unwrap().is_empty(),
+            "a deleted note is still findable"
+        );
+    }
+
+    #[test]
+    fn a_remote_client_is_not_told_where_the_trash_is() {
+        // Same rule as everywhere else: a remote caller learns nothing about the
+        // host's layout.
+        let (_t, api) = api_with_vault(Capabilities::remote_server());
+        let out = api.delete_note(&vp("a.md")).unwrap();
+        assert!(out.trashed_to.is_none());
+        assert!(out.recoverable);
     }
 
     #[test]
