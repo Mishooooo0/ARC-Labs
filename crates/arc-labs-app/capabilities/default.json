@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The minimum the desktop shell needs. Every permission here is one a reviewer can justify; there is no wildcard and no filesystem plugin, because all file access goes through arc-labs-api and its VaultPath containment rather than through a plugin the webview can call directly.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "dialog:allow-open"
+  ]
+}

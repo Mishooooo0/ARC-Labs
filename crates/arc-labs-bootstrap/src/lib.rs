@@ -1,14 +1,13 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+//! Environment detection, diagnosis and dependency installation.
+//!
+//! This is the **only** crate in ARC-LABS permitted an outbound network client.
+//! `arc-labs-core` cannot depend on it, which is what turns "fully offline" from
+//! a promise into a property of the dependency graph. See [`setup`] for how that
+//! coexists with a command whose whole job is to download things.
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+pub mod doctor;
+pub mod platform;
+pub mod setup;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub use doctor::{Level, Report};
+pub use platform::{Os, PackageManager, Platform};

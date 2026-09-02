@@ -1,0 +1,241 @@
+/*
+ * Global base. Every value here is a token — see lib/tokens.css for the rule
+ * and the lint that enforces it.
+ */
+
+@import "./lib/tokens.css";
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--arc-bg-0);
+  color: var(--arc-fg);
+  font-family: var(--arc-font-ui);
+  font-size: var(--arc-text-md);
+  line-height: var(--arc-leading);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden; /* panes scroll, the page does not */
+}
+
+#app {
+  height: 100%;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+input {
+  font: inherit;
+  color: inherit;
+}
+
+/* One focus treatment for the whole app. Keyboard only — the Phase 2 gate is
+ * that every action is reachable without a mouse, so the focus ring has to be
+ * unmistakable when it matters and invisible when it does not. */
+:focus-visible {
+  outline: 2px solid var(--arc-accent);
+  outline-offset: 1px;
+  border-radius: var(--arc-radius-sm);
+}
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+::selection {
+  background: var(--arc-accent-wash);
+}
+
+/* Scrollbars: present, quiet, not a design feature. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--arc-line-strong) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--arc-line-strong);
+  border-radius: var(--arc-radius);
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ── Data vs prose ─────────────────────────────────────────────────────────
+ * Monospace is reserved for data: paths, hashes, timestamps, counts, tok/s.
+ * Never for prose. This class is how that rule is applied. */
+.data {
+  font-family: var(--arc-font-data);
+  font-size: var(--arc-text-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--arc-fg-dim);
+}
+
+/* ── Rendered note ─────────────────────────────────────────────────────────
+ * Styling for the HTML that comes back from the Rust renderer. */
+.prose {
+  font-family: var(--arc-font-prose);
+  max-width: var(--arc-measure);
+  color: var(--arc-fg);
+}
+
+.prose > *:first-child {
+  margin-top: 0;
+}
+
+.prose h1,
+.prose h2,
+.prose h3,
+.prose h4,
+.prose h5,
+.prose h6 {
+  line-height: var(--arc-leading-tight);
+  font-weight: 600;
+  margin: var(--arc-space-6) 0 var(--arc-space-3);
+}
+.prose h1 {
+  font-size: var(--arc-text-2xl);
+  letter-spacing: -0.01em;
+}
+.prose h2 {
+  font-size: var(--arc-text-xl);
+  letter-spacing: -0.005em;
+}
+.prose h3 {
+  font-size: var(--arc-text-lg);
+}
+.prose h4,
+.prose h5,
+.prose h6 {
+  font-size: var(--arc-text-md);
+  color: var(--arc-fg-dim);
+}
+
+.prose p,
+.prose ul,
+.prose ol,
+.prose blockquote,
+.prose table {
+  margin: 0 0 var(--arc-space-4);
+}
+
+.prose a {
+  color: var(--arc-accent);
+  text-decoration: none;
+  border-bottom: 1px solid var(--arc-accent-dim);
+  transition: border-color var(--arc-dur-fast) var(--arc-ease);
+}
+.prose a:hover {
+  border-bottom-color: var(--arc-accent);
+}
+
+/* Wikilinks and tags come back as arc:// hrefs from the renderer, which is what
+ * lets them be styled and intercepted without the renderer emitting raw HTML. */
+.prose a[href^="arc://tag/"] {
+  font-family: var(--arc-font-data);
+  font-size: var(--arc-text-xs);
+  padding: 1px var(--arc-space-2);
+  border: 1px solid var(--arc-line-strong);
+  border-radius: var(--arc-radius-lg);
+  color: var(--arc-fg-dim);
+  white-space: nowrap;
+}
+.prose a[href^="arc://tag/"]:hover {
+  color: var(--arc-fg);
+  border-color: var(--arc-accent-dim);
+}
+
+.prose a[href^="arc://embed/"] {
+  display: inline-block;
+  font-family: var(--arc-font-data);
+  font-size: var(--arc-text-xs);
+  padding: var(--arc-space-1) var(--arc-space-2);
+  border: 1px dashed var(--arc-line-strong);
+  border-radius: var(--arc-radius-sm);
+  color: var(--arc-fg-dim);
+}
+
+.prose code {
+  font-family: var(--arc-font-data);
+  font-size: 0.92em;
+  background: var(--arc-bg-2);
+  border: 1px solid var(--arc-line);
+  border-radius: var(--arc-radius-sm);
+  padding: 0.1em 0.35em;
+}
+
+.prose pre {
+  background: var(--arc-bg-1);
+  border: 1px solid var(--arc-line);
+  border-radius: var(--arc-radius);
+  padding: var(--arc-space-3) var(--arc-space-4);
+  overflow-x: auto;
+  margin: 0 0 var(--arc-space-4);
+}
+.prose pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: var(--arc-text-sm);
+}
+
+.prose blockquote {
+  border-left: 2px solid var(--arc-line-strong);
+  padding-left: var(--arc-space-4);
+  color: var(--arc-fg-dim);
+}
+
+.prose table {
+  border-collapse: collapse;
+  font-size: var(--arc-text-sm);
+  display: block;
+  overflow-x: auto;
+}
+.prose th,
+.prose td {
+  border: 1px solid var(--arc-line);
+  padding: var(--arc-space-2) var(--arc-space-3);
+  text-align: left;
+}
+.prose th {
+  background: var(--arc-bg-2);
+  font-weight: 600;
+}
+
+.prose hr {
+  border: none;
+  border-top: 1px solid var(--arc-line);
+  margin: var(--arc-space-6) 0;
+}
+
+.prose input[type="checkbox"] {
+  accent-color: var(--arc-accent);
+  margin-right: var(--arc-space-2);
+}
+.prose li:has(> input[type="checkbox"]) {
+  list-style: none;
+  margin-left: calc(var(--arc-space-5) * -1);
+}
+
+.prose img {
+  max-width: 100%;
+  border-radius: var(--arc-radius);
+}

@@ -1,0 +1,26 @@
+[package]
+name         = "arc-labs-app"
+description  = "The Tauri desktop shell for Windows and Linux. Commands only — every one is a thin wrapper over arc-labs-api."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[[bin]]
+name = "arc-labs-app"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+arc-labs-core        = { workspace = true }
+arc-labs-api         = { workspace = true }
+serde                = { workspace = true }
+serde_json           = { workspace = true }
+tracing              = { workspace = true }
+tracing-subscriber   = { workspace = true }
+tauri                = { version = "2", features = [] }
+tauri-plugin-dialog  = "2"
+tokio = { workspace = true, features = ["sync"] }

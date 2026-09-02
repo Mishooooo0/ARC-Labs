@@ -1,0 +1,192 @@
+/*
+ * THE token file. The single source of every colour, space, size and duration
+ * in ARC-LABS.
+ *
+ * The rule this file exists to enforce: **a theme is a token swap, not a
+ * stylesheet fork.** No component may contain a literal colour. `cargo xtask
+ * lint-tokens` fails the build on any hex, rgb() or hsl() outside this file, so
+ * the rule is a test rather than a habit.
+ *
+ * ── Reserved colours ──────────────────────────────────────────────────────
+ * --arc-human (amber) and --arc-agent (blue) mean authorship and nothing else,
+ * anywhere in the product. They are never used for emphasis, never for a link,
+ * never for a chart series, never because a button looked better. Constraint 6
+ * says someone who has never used this app should be able to point at what an
+ * agent touched in a screenshot; that only survives seven phases if the two hues
+ * are spent on nothing else.
+ *
+ * This is also why --arc-accent is green-leaning: it has to be unmistakably
+ * neither amber nor blue at a glance, at low saturation, at any zoom.
+ *
+ * ── Direction ─────────────────────────────────────────────────────────────
+ * An oscilloscope, not a spaceship cockpit. Deep layered darks, thin borders,
+ * one restrained accent, generous negative space. No neon, no glow, no
+ * gradients, no glass. Monospace is for *data* — paths, hashes, timestamps,
+ * counts, tok/s — and never for prose.
+ */
+
+:root {
+  /* ── Surfaces: five layers, low contrast between neighbours ───────────── */
+  --arc-bg-0: #0e1113; /* app ground */
+  --arc-bg-1: #14181b; /* panels */
+  --arc-bg-2: #1a1f23; /* raised: cards, inputs */
+  --arc-bg-3: #222a2f; /* hover */
+  --arc-bg-4: #2b343a; /* pressed / selected */
+
+  /* ── Lines: thin and quiet. Structure comes from spacing, not rules. ──── */
+  --arc-line: #232b30;
+  --arc-line-strong: #313c43;
+
+  /* ── Text ─────────────────────────────────────────────────────────────── */
+  --arc-fg: #d5dade;
+  --arc-fg-dim: #8b959d;
+  --arc-fg-faint: #5b656d;
+  --arc-fg-on-accent: #08100e;
+
+  /* ── The one accent ───────────────────────────────────────────────────── */
+  --arc-accent: #5f9e8c;
+  --arc-accent-dim: #3f6c60;
+  --arc-accent-wash: #16241f;
+
+  /* ── RESERVED. Authorship only. Never decorative. ─────────────────────── */
+  --arc-human: #d9a05b;
+  --arc-human-wash: #2a2015;
+  --arc-agent: #5b8fd6;
+  --arc-agent-wash: #16202e;
+
+  /* ── Status. Distinct from both reserved hues. ────────────────────────── */
+  --arc-danger: #c96a68;
+  --arc-warn: #b8925a;
+
+  /* ── Type ─────────────────────────────────────────────────────────────── */
+  --arc-font-ui: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  /* Data only. See the header. */
+  --arc-font-data: ui-monospace, "SF Mono", "Cascadia Mono", "JetBrains Mono",
+    Menlo, Consolas, monospace;
+  --arc-font-prose: var(--arc-font-ui);
+
+  --arc-text-xs: 11px;
+  --arc-text-sm: 12px;
+  --arc-text-md: 13px;
+  --arc-text-lg: 15px;
+  --arc-text-xl: 19px;
+  --arc-text-2xl: 25px;
+
+  --arc-leading-tight: 1.25;
+  --arc-leading: 1.6;
+
+  /* ── Space: 4px base. Generous negative space is the direction. ───────── */
+  --arc-space-1: 4px;
+  --arc-space-2: 8px;
+  --arc-space-3: 12px;
+  --arc-space-4: 16px;
+  --arc-space-5: 24px;
+  --arc-space-6: 32px;
+  --arc-space-7: 48px;
+  --arc-space-8: 64px;
+
+  --arc-radius-sm: 3px;
+  --arc-radius: 5px;
+  --arc-radius-lg: 8px;
+
+  /* ── Motion: 120-200ms, ease-out, always interruptible. ───────────────────
+   * --arc-motion is a multiplier the user controls; 0 disables animation
+   * outright. Every transition multiplies by it, so "reduce motion" is one
+   * value rather than a hunt through components. */
+  --arc-motion: 1;
+  --arc-dur-fast: calc(120ms * var(--arc-motion));
+  --arc-dur: calc(160ms * var(--arc-motion));
+  --arc-dur-slow: calc(200ms * var(--arc-motion));
+  --arc-ease: cubic-bezier(0.16, 0.8, 0.32, 1);
+
+  /* ── Layout ───────────────────────────────────────────────────────────── */
+  --arc-sidebar-w: 260px;
+  --arc-topbar-h: 38px;
+  --arc-measure: 68ch; /* reading width for prose */
+
+  --arc-z-base: 0;
+  --arc-z-sticky: 10;
+  --arc-z-overlay: 100;
+  --arc-z-modal: 1000;
+}
+
+/* ── ARC Light ────────────────────────────────────────────────────────────
+ * Not an inversion. Paper under lamplight: warm-neutral grounds, the same
+ * restraint, the same two reserved hues darkened enough to hold their meaning
+ * against a light ground. */
+:root[data-theme="arc-light"] {
+  --arc-bg-0: #f7f7f5;
+  --arc-bg-1: #ffffff;
+  --arc-bg-2: #f2f2ef;
+  --arc-bg-3: #e8e8e4;
+  --arc-bg-4: #deded8;
+
+  --arc-line: #e2e2dc;
+  --arc-line-strong: #c9c9c1;
+
+  --arc-fg: #23282b;
+  --arc-fg-dim: #5f686e;
+  --arc-fg-faint: #8b949a;
+  --arc-fg-on-accent: #ffffff;
+
+  --arc-accent: #3d7d6b;
+  --arc-accent-dim: #6aa595;
+  --arc-accent-wash: #e6f0ec;
+
+  --arc-human: #9a6516;
+  --arc-human-wash: #f6ecdc;
+  --arc-agent: #2f5f9e;
+  --arc-agent-wash: #e4ecf7;
+
+  --arc-danger: #a33f3d;
+  --arc-warn: #8a6420;
+}
+
+/* ── ARC Terminal ─────────────────────────────────────────────────────────
+ * Monochrome — with one deliberate exception. The two authorship hues stay.
+ * They are not decoration, they are the meaning the product exists to convey,
+ * and a theme that greyed them out would break constraint 6 rather than honour
+ * a stylistic preference. Everything else is phosphor and shadow. */
+:root[data-theme="arc-terminal"] {
+  --arc-bg-0: #000000;
+  --arc-bg-1: #080808;
+  --arc-bg-2: #101010;
+  --arc-bg-3: #1a1a1a;
+  --arc-bg-4: #262626;
+
+  --arc-line: #1f1f1f;
+  --arc-line-strong: #333333;
+
+  --arc-fg: #cfcfcf;
+  --arc-fg-dim: #8a8a8a;
+  --arc-fg-faint: #565656;
+  --arc-fg-on-accent: #000000;
+
+  --arc-accent: #b8b8b8;
+  --arc-accent-dim: #6e6e6e;
+  --arc-accent-wash: #161616;
+
+  /* Kept. See above. */
+  --arc-human: #d9a05b;
+  --arc-human-wash: #1e1710;
+  --arc-agent: #5b8fd6;
+  --arc-agent-wash: #101722;
+
+  --arc-danger: #b8706a;
+  --arc-warn: #8a8a8a;
+
+  --arc-font-ui: var(--arc-font-data);
+  --arc-font-prose: var(--arc-font-data);
+  --arc-radius-sm: 0px;
+  --arc-radius: 0px;
+  --arc-radius-lg: 0px;
+}
+
+/* The OS-level preference wins over the multiplier: someone who has asked their
+ * system to reduce motion has already answered this question. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --arc-motion: 0;
+  }
+}

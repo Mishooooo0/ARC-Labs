@@ -6,6 +6,7 @@ members = [
     "crates/arc-labs-bootstrap",
     "crates/arc-labs-server",
     "crates/arc-labs-cli",
+    "crates/arc-labs-app",
     "xtask",
 ]
 
