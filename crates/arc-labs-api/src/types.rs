@@ -159,3 +159,63 @@ pub struct DirListing {
     pub parent: Option<String>,
     pub entries: Vec<DirEntry>,
 }
+
+// ── Ledger (Phase 3) ─────────────────────────────────────────────────────────
+
+/// One entry on the timeline, with the index needed to restore to it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelineEntry {
+    /// Position in the note's history. What `restore` takes.
+    pub index: usize,
+    pub ts: String,
+    /// "human" or "agent". **The field the whole surface hangs off** — it
+    /// decides whether an entry is drawn amber or blue, which is constraint 6.
+    pub actor_kind: String,
+    pub actor_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
+    pub op: String,
+    pub reason: String,
+    /// Whether this operation changed the file. A proposal did not.
+    pub touched_file: bool,
+    /// Lines added and removed, for sizing the timeline bar without parsing the
+    /// diff in the browser.
+    pub added: usize,
+    pub removed: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub destination: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<u64>,
+}
+
+/// A proposal awaiting a decision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Proposal {
+    pub index: usize,
+    pub ts: String,
+    pub actor_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    pub reason: String,
+    /// The unified diff, for review.
+    pub patch: String,
+    pub added: usize,
+    pub removed: usize,
+}
+
+/// The full diff for one timeline entry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntryDiff {
+    pub index: usize,
+    pub patch: String,
+    /// Content as of this entry, so the UI can preview a restore before doing it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+}

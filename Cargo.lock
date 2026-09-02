@@ -103,6 +103,7 @@ version = "0.1.0"
 dependencies = [
  "arc-labs-core",
  "arc-labs-index",
+ "arc-labs-ledger",
  "async-trait",
  "dunce",
  "serde",
@@ -184,6 +185,20 @@ dependencies = [
  "rusqlite",
  "serde",
  "sqlite-vec",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tracing",
+]
+
+[[package]]
+name = "arc-labs-ledger"
+version = "0.1.0"
+dependencies = [
+ "arc-labs-core",
+ "blake3",
+ "serde",
+ "serde_json",
+ "similar",
  "tempfile",
  "thiserror 2.0.20",
  "tracing",
@@ -3590,6 +3605,12 @@ name = "simd-adler32"
 version = "0.3.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
+
+[[package]]
+name = "similar"
+version = "2.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
 
 [[package]]
 name = "siphasher"

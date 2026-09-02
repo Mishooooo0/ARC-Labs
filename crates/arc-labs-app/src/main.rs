@@ -55,6 +55,50 @@ fn save_note(
 }
 
 #[tauri::command]
+fn timeline(api: tauri::State<'_, Arc<Api>>, path: VaultPath) -> CmdResult<Vec<arc_labs_api::TimelineEntry>> {
+    api.timeline(&path)
+}
+
+#[tauri::command]
+fn proposals(api: tauri::State<'_, Arc<Api>>, path: VaultPath) -> CmdResult<Vec<arc_labs_api::Proposal>> {
+    api.proposals(&path)
+}
+
+#[tauri::command]
+fn entry_diff(api: tauri::State<'_, Arc<Api>>, path: VaultPath, index: usize) -> CmdResult<arc_labs_api::EntryDiff> {
+    api.entry_diff(&path, index)
+}
+
+#[tauri::command]
+fn restore(api: tauri::State<'_, Arc<Api>>, path: VaultPath, index: usize) -> CmdResult<SaveResult> {
+    api.restore(&path, index)
+}
+
+#[tauri::command]
+fn accept(api: tauri::State<'_, Arc<Api>>, path: VaultPath, index: usize) -> CmdResult<SaveResult> {
+    api.accept(&path, index)
+}
+
+#[tauri::command]
+fn reject(api: tauri::State<'_, Arc<Api>>, path: VaultPath, index: usize) -> CmdResult<()> {
+    api.reject(&path, index)
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+fn propose(
+    api: tauri::State<'_, Arc<Api>>,
+    path: VaultPath,
+    agent: String,
+    model: String,
+    session: String,
+    reason: String,
+    content: String,
+) -> CmdResult<arc_labs_api::Proposal> {
+    api.propose(&path, &agent, &model, &session, &reason, &content)
+}
+
+#[tauri::command]
 fn search(api: tauri::State<'_, Arc<Api>>, q: String, limit: Option<usize>) -> CmdResult<Vec<Q::SearchHit>> {
     api.search(&q, limit.unwrap_or(50))
 }
@@ -165,6 +209,13 @@ fn main() {
             note,
             note_for_edit,
             save_note,
+            timeline,
+            proposals,
+            entry_diff,
+            restore,
+            accept,
+            reject,
+            propose,
             search,
             quick_open,
             recent,

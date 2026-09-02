@@ -16,11 +16,12 @@
   import { transport } from "./lib/transport";
   import type {
     Backlink, GraphData, IndexStats, NoteRef, NoteView as Note, OutgoingLink,
-    SearchHit, Status, TagCount, TreeView, UnresolvedLink,
+    Proposal, SearchHit, Status, TagCount, TimelineEntry, TreeView, UnresolvedLink,
   } from "./lib/types";
   import { TransportError } from "./lib/types";
   import ArcMark from "./components/ArcMark.svelte";
   import Context from "./components/Context.svelte";
+  import DiffView from "./components/DiffView.svelte";
   import Editor, { type SaveState } from "./components/Editor.svelte";
   import EmptyState from "./components/EmptyState.svelte";
   import FileTree from "./components/FileTree.svelte";
@@ -28,9 +29,11 @@
   import Graph from "./components/Graph.svelte";
   import Home from "./components/Home.svelte";
   import NoteViewer from "./components/NoteView.svelte";
+  import Proposals from "./components/Proposals.svelte";
   import Palette, { type Command, type Mode } from "./components/Palette.svelte";
   import SaveStateBadge from "./components/SaveState.svelte";
   import SearchPane from "./components/SearchPane.svelte";
+  import Timeline from "./components/Timeline.svelte";
   import VaultStatus from "./components/VaultStatus.svelte";
 
   type View = "home" | "note" | "search" | "graph";
@@ -67,6 +70,18 @@
   let tagFilter = $state<string | null>(null);
   let tagNotes = $state<NoteRef[]>([]);
   let searchPane = $state<ReturnType<typeof SearchPane> | null>(null);
+
+  // Ledger state.
+  let timeline = $state<TimelineEntry[]>([]);
+  let proposals = $state<Proposal[]>([]);
+  let selectedEntry = $state<number | null>(null);
+  let entryPatch = $state<string>("");
+  let proposalBusy = $state(false);
+  let showTimeline = $state(true);
+
+  let selectedTimelineEntry = $derived(
+    selectedEntry === null ? null : (timeline[selectedEntry] ?? null),
+  );
 
   let paletteOpen = $state(false);
   let paletteMode = $state<Mode>("commands");
@@ -148,6 +163,67 @@
       error = message(e);
     }
     void loadContext(path);
+    void loadHistory(path);
+  }
+
+  /**
+   * A note's history and any open proposals.
+   *
+   * Reloaded after every write, because the timeline is the record of what
+   * happened — a stale one would be the one surface in the product that lies.
+   */
+  async function loadHistory(path: string) {
+    selectedEntry = null;
+    entryPatch = "";
+    try {
+      const [t, p] = await Promise.all([transport.timeline(path), transport.proposals(path)]);
+      if (selected === path) {
+        timeline = t;
+        proposals = p;
+      }
+    } catch {
+      timeline = [];
+      proposals = [];
+    }
+  }
+
+  async function selectEntry(index: number | null) {
+    selectedEntry = index;
+    entryPatch = "";
+    if (index === null || !selected) return;
+    try {
+      entryPatch = (await transport.entryDiff(selected, index)).patch;
+    } catch (e) {
+      error = message(e);
+    }
+  }
+
+  async function restoreTo(index: number) {
+    if (!selected) return;
+    try {
+      await transport.restore(selected, index);
+      note = await transport.note(selected);
+      await loadHistory(selected);
+      void loadContext(selected);
+    } catch (e) {
+      error = message(e);
+    }
+  }
+
+  async function decide(index: number, accept: boolean) {
+    if (!selected) return;
+    proposalBusy = true;
+    try {
+      if (accept) await transport.accept(selected, index);
+      else await transport.reject(selected, index);
+      note = await transport.note(selected);
+      await loadHistory(selected);
+      void loadContext(selected);
+    } catch (e) {
+      error = message(e);
+    } finally {
+      proposalBusy = false;
+    }
   }
 
   async function loadContext(path: string) {
@@ -295,6 +371,12 @@
       hint: "⌘⇧B",
       run: () => (showContext = !showContext),
     },
+    {
+      id: "timeline",
+      label: showTimeline ? "Hide history rail" : "Show history rail",
+      hint: "⌘⇧T",
+      run: () => (showTimeline = !showTimeline),
+    },
     { id: "theme", label: `Theme: ${theme.replace("arc-", "")}`, run: cycleTheme },
     { id: "reindex", label: "Rebuild the index", run: () => void reindex() },
   ]);
@@ -335,6 +417,11 @@
     if (e.shiftKey && k === "b") {
       e.preventDefault();
       showContext = !showContext;
+      return;
+    }
+    if (e.shiftKey && k === "t") {
+      e.preventDefault();
+      showTimeline = !showTimeline;
       return;
     }
     if (k === "e" && !e.shiftKey) {
@@ -475,12 +562,27 @@
               onstate={(s, d) => {
                 saveState = s;
                 saveDetail = d;
+                // A completed save is a new ledger entry; pull it in so the
+                // rail is never behind the file it describes.
+                if (s === "saved" && selected) void loadHistory(selected);
               }}
               onerror={(m) => (error = m)}
             />
           {/key}
         {:else if note}
-          <NoteViewer {note} onnavigate={navigate} />
+          <div class="note-stack">
+            {#if proposals.length}
+              <div class="proposals">
+                <Proposals
+                  {proposals}
+                  busy={proposalBusy}
+                  onaccept={(i) => decide(i, true)}
+                  onreject={(i) => decide(i, false)}
+                />
+              </div>
+            {/if}
+            <NoteViewer {note} onnavigate={navigate} />
+          </div>
         {:else}
           <EmptyState
             title="Nothing open"
@@ -493,7 +595,25 @@
             actionLabel="Find a note"
           />
         {/if}
+
+        {#if selectedTimelineEntry}
+          <DiffView
+            entry={selectedTimelineEntry}
+            patch={entryPatch}
+            onrestore={restoreTo}
+            onclose={() => selectEntry(null)}
+          />
+        {/if}
       </main>
+
+      {#if showTimeline && view === "note" && selected && !isCanvas && timeline.length}
+        <Timeline
+          entries={timeline}
+          selected={selectedEntry}
+          onselect={selectEntry}
+          onrestore={restoreTo}
+        />
+      {/if}
 
       {#if showContext && view === "note" && selected && !isCanvas}
         <aside class="context-pane">
@@ -615,6 +735,18 @@
     background: var(--arc-bg-1);
     border-left: 1px solid var(--arc-line);
     min-height: 0;
+  }
+
+  .note-stack {
+    height: 100%;
+    overflow-y: auto;
+  }
+  .proposals {
+    padding: var(--arc-space-5) var(--arc-space-7) 0;
+  }
+  .note-stack :global(.note) {
+    height: auto;
+    overflow: visible;
   }
 
   .pane {

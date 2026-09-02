@@ -238,6 +238,9 @@ impl Api {
         text: &str,
         base_hash: Option<&str>,
     ) -> ApiResult<SaveResult> {
+        // Captured before the write, for the ledger entry afterwards.
+        let before_text = self.with_vault(|v| Ok(v.read_note(path)?)).ok().map(|n| n.text().to_string());
+
         let result = self.with_vault(|v| {
             let current = v.read_note(path)?;
             if let Some(base) = base_hash {
@@ -263,10 +266,30 @@ impl Api {
             })
         })?;
 
-        // Refresh this note's index rows. Without it, search, backlinks and the
-        // graph go stale the moment anything is edited — and a search index that
-        // disagrees with the vault is worse than no search index.
         if result.written {
+            // Record the change. Constraint 5 says *every* mutation is
+            // ledgered, human included — a ledger that only saw agents would
+            // show one colour and answer none of the questions the product
+            // exists to answer.
+            if let Some(before) = before_text.as_deref() {
+                if let Err(e) = self.ledger().and_then(|l| {
+                    l.record_change(
+                        path,
+                        self.human(),
+                        arc_labs_ledger::Op::Edit,
+                        "manual edit",
+                        Some(before),
+                        Some(text),
+                    )
+                    .map_err(ledger_err)
+                }) {
+                    tracing::warn!(error = %e, path = %path, "could not record the edit");
+                }
+            }
+
+            // Refresh this note's index rows. Without it, search, backlinks and
+            // the graph go stale the moment anything is edited — and a search
+            // index that disagrees with the vault is worse than none.
             if let Err(e) = self.reindex_note(path) {
                 tracing::warn!(error = %e, path = %path, "could not reindex after save");
             }
@@ -276,6 +299,195 @@ impl Api {
 
     pub fn config(&self) -> Config {
         self.state.read().expect("state lock poisoned").config.clone()
+    }
+
+    // ── Ledger ──────────────────────────────────────────────────────────────
+
+    fn ledger(&self) -> ApiResult<arc_labs_ledger::Ledger> {
+        let state = self.state.read().expect("state lock poisoned");
+        let vault = state.vault.as_ref().ok_or_else(ApiError::no_vault)?;
+        arc_labs_ledger::Ledger::open(vault.root().path()).map_err(ledger_err)
+    }
+
+    /// Who the current user is, for attribution.
+    fn human(&self) -> arc_labs_ledger::Actor {
+        arc_labs_ledger::Actor::human(
+            self.state.read().expect("state lock poisoned").config.resolved_actor_id(),
+        )
+    }
+
+    /// A note's history, oldest first.
+    pub fn timeline(&self, path: &VaultPath) -> ApiResult<Vec<TimelineEntry>> {
+        let entries = self.ledger()?.read(path).map_err(ledger_err)?;
+        Ok(entries.iter().enumerate().map(|(i, e)| to_timeline(i, e)).collect())
+    }
+
+    /// Proposals on a note that have not been accepted or rejected.
+    ///
+    /// Worked out by walking the history rather than stored as a separate list:
+    /// the ledger is the only record, and a second list of "pending" state could
+    /// disagree with it.
+    pub fn proposals(&self, path: &VaultPath) -> ApiResult<Vec<Proposal>> {
+        use arc_labs_ledger::Op;
+        let entries = self.ledger()?.read(path).map_err(ledger_err)?;
+
+        let mut open: Vec<Proposal> = Vec::new();
+        for (i, e) in entries.iter().enumerate() {
+            match e.op {
+                Op::Propose => {
+                    let (added, removed) = diff_counts(e.patch.as_deref());
+                    open.push(Proposal {
+                        index: i,
+                        ts: e.ts.clone(),
+                        actor_id: e.actor.id.clone(),
+                        model: e.actor.model.clone(),
+                        reason: e.reason.clone(),
+                        patch: e.patch.clone().unwrap_or_default(),
+                        added,
+                        removed,
+                    });
+                }
+                // An accept or reject settles the oldest outstanding proposal.
+                Op::Accept | Op::Reject if !open.is_empty() => {
+                    open.remove(0);
+                }
+                _ => {}
+            }
+        }
+        Ok(open)
+    }
+
+    /// The diff for one entry, and optionally the content it restores to.
+    pub fn entry_diff(&self, path: &VaultPath, index: usize) -> ApiResult<EntryDiff> {
+        let ledger = self.ledger()?;
+        let entries = ledger.read(path).map_err(ledger_err)?;
+        let entry = entries.get(index).ok_or_else(|| {
+            ApiError::new(ErrorCode::NoteNotFound, format!("no entry {index}"))
+        })?;
+        Ok(EntryDiff {
+            index,
+            patch: entry.patch.clone().unwrap_or_default(),
+            content: ledger.content_at(path, index).ok(),
+        })
+    }
+
+    /// Restore a note to the state it was in at `index`.
+    ///
+    /// This is itself a change, so it is recorded as one — attributed to the
+    /// person who asked for it, with the entry it came from as the reason. A
+    /// restore that erased its own trace would be the one hole in the audit.
+    pub fn restore(&self, path: &VaultPath, index: usize) -> ApiResult<SaveResult> {
+        let ledger = self.ledger()?;
+        let target = ledger.content_at(path, index).map_err(ledger_err)?;
+        let current = self.with_vault(|v| Ok(v.read_note(path)?))?;
+
+        let saved = self.with_vault(|v| Ok(v.write_note(path, &current, &target)?))?;
+        ledger
+            .record_change(
+                path,
+                self.human(),
+                arc_labs_ledger::Op::Edit,
+                format!("restored to entry {index}"),
+                Some(current.text()),
+                Some(&target),
+            )
+            .map_err(ledger_err)?;
+
+        let _ = self.reindex_note(path);
+        Ok(save_result(saved, &target))
+    }
+
+    /// Record an agent's proposal. **Does not touch the note.**
+    pub fn propose(
+        &self,
+        path: &VaultPath,
+        agent: &str,
+        model: &str,
+        session: &str,
+        reason: &str,
+        proposed: &str,
+    ) -> ApiResult<Proposal> {
+        let ledger = self.ledger()?;
+        let current = self.with_vault(|v| Ok(v.read_note(path)?))?;
+        let entry = ledger
+            .propose(
+                path,
+                arc_labs_ledger::Actor::agent(agent, model, session),
+                reason,
+                current.text(),
+                proposed,
+            )
+            .map_err(ledger_err)?;
+
+        let index = ledger.read(path).map_err(ledger_err)?.len() - 1;
+        let (added, removed) = diff_counts(entry.patch.as_deref());
+        Ok(Proposal {
+            index,
+            ts: entry.ts,
+            actor_id: entry.actor.id,
+            model: entry.actor.model,
+            reason: entry.reason,
+            patch: entry.patch.unwrap_or_default(),
+            added,
+            removed,
+        })
+    }
+
+    /// Apply a proposal. This is the only path by which agent output reaches a
+    /// file, and it runs because a person said so.
+    pub fn accept(&self, path: &VaultPath, index: usize) -> ApiResult<SaveResult> {
+        let ledger = self.ledger()?;
+        let entries = ledger.read(path).map_err(ledger_err)?;
+        let entry = entries.get(index).filter(|e| e.op == arc_labs_ledger::Op::Propose).ok_or_else(
+            || ApiError::new(ErrorCode::NoteNotFound, format!("no proposal at {index}")),
+        )?;
+        let proposed = ledger
+            .objects()
+            .get(entry.after.as_deref().unwrap_or_default())
+            .map_err(ledger_err)?;
+
+        let current = self.with_vault(|v| Ok(v.read_note(path)?))?;
+        let saved = self.with_vault(|v| Ok(v.write_note(path, &current, &proposed)?))?;
+
+        // Attributed to the agent that proposed it, because that is who wrote
+        // the words — with the acceptance itself recorded as the reason.
+        let mut actor = entry.actor.clone();
+        actor.session = entry.actor.session.clone();
+        ledger
+            .record_accept(
+                path,
+                actor,
+                format!("accepted proposal {index}: {}", entry.reason),
+                current.text(),
+                &proposed,
+            )
+            .map_err(ledger_err)?;
+
+        let _ = self.reindex_note(path);
+        Ok(save_result(saved, &proposed))
+    }
+
+    /// Discard a proposal. The note is never touched.
+    pub fn reject(&self, path: &VaultPath, index: usize) -> ApiResult<()> {
+        let ledger = self.ledger()?;
+        let entries = ledger.read(path).map_err(ledger_err)?;
+        let entry = entries.get(index).filter(|e| e.op == arc_labs_ledger::Op::Propose).ok_or_else(
+            || ApiError::new(ErrorCode::NoteNotFound, format!("no proposal at {index}")),
+        )?;
+        let proposed = ledger
+            .objects()
+            .get(entry.after.as_deref().unwrap_or_default())
+            .map_err(ledger_err)?;
+
+        ledger
+            .record_reject(
+                path,
+                entry.actor.clone(),
+                format!("rejected proposal {index}: {}", entry.reason),
+                &proposed,
+            )
+            .map_err(ledger_err)?;
+        Ok(())
     }
 
     // ── Index ───────────────────────────────────────────────────────────────
@@ -423,6 +635,65 @@ impl Api {
     }
 }
 
+fn ledger_err(e: arc_labs_ledger::LedgerError) -> ApiError {
+    tracing::debug!(error = %e, "ledger error");
+    ApiError::new(ErrorCode::Io, e.public())
+}
+
+fn save_result(saved: arc_labs_core::Saved, content: &str) -> SaveResult {
+    let hash = arc_labs_ledger::hash_of(content);
+    match saved {
+        arc_labs_core::Saved::Written { bytes } => SaveResult { written: true, bytes, hash },
+        arc_labs_core::Saved::Unchanged => SaveResult { written: false, bytes: 0, hash },
+    }
+}
+
+/// Added and removed line counts from a unified diff.
+///
+/// Counted here rather than in the browser so the timeline can size a bar
+/// without shipping and parsing every patch in a note's history.
+fn diff_counts(patch: Option<&str>) -> (usize, usize) {
+    let Some(p) = patch else { return (0, 0) };
+    let mut added = 0;
+    let mut removed = 0;
+    for line in p.lines() {
+        // `+++`/`---` are the file headers, not content.
+        if line.starts_with("+++") || line.starts_with("---") {
+            continue;
+        }
+        match line.as_bytes().first() {
+            Some(b'+') => added += 1,
+            Some(b'-') => removed += 1,
+            _ => {}
+        }
+    }
+    (added, removed)
+}
+
+fn to_timeline(index: usize, e: &arc_labs_ledger::Entry) -> TimelineEntry {
+    let (added, removed) = diff_counts(e.patch.as_deref());
+    TimelineEntry {
+        index,
+        ts: e.ts.clone(),
+        actor_kind: match e.actor.kind {
+            arc_labs_ledger::ActorKind::Human => "human",
+            arc_labs_ledger::ActorKind::Agent => "agent",
+        }
+        .into(),
+        actor_id: e.actor.id.clone(),
+        model: e.actor.model.clone(),
+        session: e.actor.session.clone(),
+        op: format!("{:?}", e.op).to_lowercase(),
+        reason: e.reason.clone(),
+        touched_file: e.op.touches_file(),
+        added,
+        removed,
+        from_path: e.from_path.clone(),
+        destination: e.destination.clone(),
+        bytes: e.bytes,
+    }
+}
+
 fn index_err(e: arc_labs_index::IndexError) -> ApiError {
     // The full form can name the database path; the public form must not.
     tracing::debug!(error = %e, "index error");
@@ -551,6 +822,117 @@ mod tests {
             std::fs::read(tmp.path().join("a.md")).unwrap(),
             b"# written by someone else\n"
         );
+    }
+
+    #[test]
+    fn every_human_save_lands_on_the_timeline() {
+        // Constraint 5: *every* mutation is ledgered, human included. A ledger
+        // that only recorded agents would show one colour and answer none of
+        // the questions the product exists to answer.
+        let (_t, api) = api_with_vault(Capabilities::desktop());
+        let p = VaultPath::new("a.md").unwrap();
+
+        let n = api.read_note_for_edit(&p).unwrap();
+        api.write_note(&p, "# A changed\n", Some(&n.hash)).unwrap();
+
+        let timeline = api.timeline(&p).unwrap();
+        assert_eq!(timeline.len(), 1);
+        assert_eq!(timeline[0].actor_kind, "human");
+        assert_eq!(timeline[0].op, "edit");
+        assert!(timeline[0].touched_file);
+        assert!(timeline[0].added > 0);
+    }
+
+    /// **The constraint-4 gate, end to end through the API.**
+    #[test]
+    fn a_proposal_leaves_the_file_alone_until_a_person_accepts_it() {
+        let (tmp, api) = api_with_vault(Capabilities::desktop());
+        let p = VaultPath::new("a.md").unwrap();
+        let file = tmp.path().join("a.md");
+
+        let original = std::fs::read(&file).unwrap();
+        let mtime = std::fs::metadata(&file).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+
+        let proposal = api
+            .propose(&p, "weave", "qwen3.5:0.8b", "run-1", "rewrite the opening", "# Rewritten\n")
+            .unwrap();
+
+        // Nothing on disk moved.
+        assert_eq!(std::fs::read(&file).unwrap(), original);
+        assert_eq!(std::fs::metadata(&file).unwrap().modified().unwrap(), mtime);
+
+        // But it is visible, reviewable, and attributed.
+        let open = api.proposals(&p).unwrap();
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].model.as_deref(), Some("qwen3.5:0.8b"));
+        assert!(open[0].patch.contains("+# Rewritten"));
+
+        // The timeline shows it as an agent entry that did not touch the file.
+        let t = api.timeline(&p).unwrap();
+        assert_eq!(t[0].actor_kind, "agent");
+        assert!(!t[0].touched_file);
+
+        // Accepting is the only thing that writes, and it is still attributed
+        // to the agent that wrote the words.
+        api.accept(&p, proposal.index).unwrap();
+        assert_eq!(std::fs::read(&file).unwrap(), b"# Rewritten\n");
+        assert!(api.proposals(&p).unwrap().is_empty(), "accepting should settle it");
+
+        let t = api.timeline(&p).unwrap();
+        assert_eq!(t[1].op, "accept");
+        assert_eq!(t[1].actor_kind, "agent");
+        assert!(t[1].touched_file);
+    }
+
+    #[test]
+    fn rejecting_a_proposal_never_writes_and_is_kept_as_history() {
+        let (tmp, api) = api_with_vault(Capabilities::desktop());
+        let p = VaultPath::new("a.md").unwrap();
+        let file = tmp.path().join("a.md");
+        let original = std::fs::read(&file).unwrap();
+
+        let proposal =
+            api.propose(&p, "weave", "m", "s", "a rewrite", "# Nobody wanted this\n").unwrap();
+        api.reject(&p, proposal.index).unwrap();
+
+        assert_eq!(std::fs::read(&file).unwrap(), original, "reject must not write");
+        assert!(api.proposals(&p).unwrap().is_empty());
+
+        // The refusal is history too: an audit that shows only accepted changes
+        // tells you what an agent did but not what it wanted to do.
+        let t = api.timeline(&p).unwrap();
+        assert_eq!(t[1].op, "reject");
+        assert!(!t[1].touched_file);
+    }
+
+    #[test]
+    fn restore_puts_a_note_back_and_records_that_it_did() {
+        let (_t, api) = api_with_vault(Capabilities::desktop());
+        let p = VaultPath::new("a.md").unwrap();
+
+        let v0 = api.read_note_for_edit(&p).unwrap();
+        let original = v0.text.clone().unwrap();
+
+        let r1 = api.write_note(&p, "# second\n", Some(&v0.hash)).unwrap();
+        api.write_note(&p, "# third\n", Some(&r1.hash)).unwrap();
+        assert_eq!(api.read_note_for_edit(&p).unwrap().text.as_deref(), Some("# third\n"));
+
+        // Entry 0 is the first edit, whose `after` is "# second\n".
+        api.restore(&p, 0).unwrap();
+        assert_eq!(api.read_note_for_edit(&p).unwrap().text.as_deref(), Some("# second\n"));
+
+        // The restore is itself on the timeline — an undo that erased its own
+        // trace would be the one hole in the audit.
+        let t = api.timeline(&p).unwrap();
+        assert_eq!(t.len(), 3);
+        assert!(t[2].reason.contains("restored to entry 0"));
+        assert_eq!(t[2].actor_kind, "human");
+
+        // The original is still reachable, because nothing is ever discarded.
+        let diff = api.entry_diff(&p, 0).unwrap();
+        assert!(!diff.patch.is_empty());
+        assert!(original.starts_with("# A"));
     }
 
     #[test]

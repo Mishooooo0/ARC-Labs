@@ -17,8 +17,9 @@
  */
 
 import type {
-  Backlink, DirListing, GraphData, IndexStats, NoteRef, NoteView, OutgoingLink,
-  SaveResult, SearchHit, Status, TagCount, TreeView, UnresolvedLink, VaultInfo,
+  Backlink, DirListing, EntryDiff, GraphData, IndexStats, NoteRef, NoteView,
+  OutgoingLink, Proposal, SaveResult, SearchHit, Status, TagCount, TimelineEntry,
+  TreeView, UnresolvedLink, VaultInfo,
 } from "./types";
 import { TransportError } from "./types";
 
@@ -34,6 +35,17 @@ export interface Transport {
    * rather than overwriting if the file changed underneath.
    */
   saveNote(path: string, text: string, baseHash: string): Promise<SaveResult>;
+  // ── Ledger (Phase 3) ──────────────────────────────────────────────────────
+  timeline(path: string): Promise<TimelineEntry[]>;
+  proposals(path: string): Promise<Proposal[]>;
+  entryDiff(path: string, index: number): Promise<EntryDiff>;
+  restore(path: string, index: number): Promise<SaveResult>;
+  accept(path: string, index: number): Promise<SaveResult>;
+  reject(path: string, index: number): Promise<void>;
+  propose(
+    path: string, agent: string, model: string, session: string, reason: string, content: string,
+  ): Promise<Proposal>;
+
   // ── Index-backed (Phase 2) ────────────────────────────────────────────────
   search(q: string, limit?: number): Promise<SearchHit[]>;
   quickOpen(q: string, limit?: number): Promise<NoteRef[]>;
@@ -144,6 +156,39 @@ class ServerTransport implements Transport {
       body: JSON.stringify({ path, text, base_hash: baseHash }),
     });
   }
+  timeline(path: string) {
+    return this.#call<TimelineEntry[]>(`timeline?path=${encodeURIComponent(path)}`);
+  }
+  proposals(path: string) {
+    return this.#call<Proposal[]>(`proposals?path=${encodeURIComponent(path)}`);
+  }
+  entryDiff(path: string, index: number) {
+    return this.#call<EntryDiff>(
+      `entry-diff?path=${encodeURIComponent(path)}&index=${index}`,
+    );
+  }
+  restore(path: string, index: number) {
+    return this.#call<SaveResult>("restore", {
+      method: "POST", body: JSON.stringify({ path, index }),
+    });
+  }
+  accept(path: string, index: number) {
+    return this.#call<SaveResult>("accept", {
+      method: "POST", body: JSON.stringify({ path, index }),
+    });
+  }
+  reject(path: string, index: number) {
+    return this.#call<void>("reject", {
+      method: "POST", body: JSON.stringify({ path, index }),
+    });
+  }
+  propose(path: string, agent: string, model: string, session: string, reason: string, content: string) {
+    return this.#call<Proposal>("propose", {
+      method: "POST",
+      body: JSON.stringify({ path, agent, model, session, reason, content }),
+    });
+  }
+
   search(q: string, limit = 50) {
     return this.#call<SearchHit[]>(`search?q=${encodeURIComponent(q)}&limit=${limit}`);
   }
@@ -224,6 +269,28 @@ class DesktopTransport implements Transport {
   saveNote(path: string, text: string, baseHash: string) {
     return this.#invoke<SaveResult>("save_note", { path, text, baseHash });
   }
+  timeline(path: string) {
+    return this.#invoke<TimelineEntry[]>("timeline", { path });
+  }
+  proposals(path: string) {
+    return this.#invoke<Proposal[]>("proposals", { path });
+  }
+  entryDiff(path: string, index: number) {
+    return this.#invoke<EntryDiff>("entry_diff", { path, index });
+  }
+  restore(path: string, index: number) {
+    return this.#invoke<SaveResult>("restore", { path, index });
+  }
+  accept(path: string, index: number) {
+    return this.#invoke<SaveResult>("accept", { path, index });
+  }
+  reject(path: string, index: number) {
+    return this.#invoke<void>("reject", { path, index });
+  }
+  propose(path: string, agent: string, model: string, session: string, reason: string, content: string) {
+    return this.#invoke<Proposal>("propose", { path, agent, model, session, reason, content });
+  }
+
   search(q: string, limit = 50) {
     return this.#invoke<SearchHit[]>("search", { q, limit });
   }

@@ -193,3 +193,44 @@ export interface GraphData {
   /** Observed links only. Phase 6 inferred edges arrive as a separate field. */
   edges: GraphEdge[];
 }
+
+// ── Ledger (Phase 3) ─────────────────────────────────────────────────────────
+
+export interface TimelineEntry {
+  index: number;
+  ts: string;
+  /**
+   * "human" or "agent". The field the whole surface hangs off: it decides
+   * whether an entry is drawn amber or blue, which is constraint 6.
+   */
+  actorKind: "human" | "agent";
+  actorId: string;
+  model?: string;
+  session?: string;
+  op: string;
+  reason: string;
+  /** Whether this operation changed the file. A proposal did not. */
+  touchedFile: boolean;
+  added: number;
+  removed: number;
+  fromPath?: string;
+  destination?: string;
+  bytes?: number;
+}
+
+export interface Proposal {
+  index: number;
+  ts: string;
+  actorId: string;
+  model?: string;
+  reason: string;
+  patch: string;
+  added: number;
+  removed: number;
+}
+
+export interface EntryDiff {
+  index: number;
+  patch: string;
+  content?: string;
+}

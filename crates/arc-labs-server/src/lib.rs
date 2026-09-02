@@ -137,6 +137,13 @@ pub fn router(api: Arc<Api>, cfg: &ServerConfig) -> Router {
         .route("/note", get(note))
         .route("/note/edit", get(note_for_edit))
         .route("/note/save", post(save_note))
+        .route("/timeline", get(timeline))
+        .route("/entry-diff", get(entry_diff))
+        .route("/proposals", get(proposals))
+        .route("/restore", post(restore))
+        .route("/propose", post(propose))
+        .route("/accept", post(accept))
+        .route("/reject", post(reject))
         .route("/search", get(search))
         .route("/quick-open", get(quick_open))
         .route("/backlinks", get(backlinks))
@@ -249,6 +256,68 @@ async fn save_note(
     Json(body): Json<SaveBody>,
 ) -> WebResult<arc_labs_api::SaveResult> {
     Ok(Json(s.api.write_note(&body.path, &body.text, body.base_hash.as_deref())?))
+}
+
+async fn timeline(
+    State(s): State<Arc<AppState>>,
+    Query(q): Query<NoteQuery>,
+) -> WebResult<Vec<arc_labs_api::TimelineEntry>> {
+    Ok(Json(s.api.timeline(&q.path)?))
+}
+
+async fn proposals(
+    State(s): State<Arc<AppState>>,
+    Query(q): Query<NoteQuery>,
+) -> WebResult<Vec<arc_labs_api::Proposal>> {
+    Ok(Json(s.api.proposals(&q.path)?))
+}
+
+#[derive(Deserialize)]
+struct EntryQuery {
+    path: VaultPath,
+    index: usize,
+}
+
+async fn entry_diff(
+    State(s): State<Arc<AppState>>,
+    Query(q): Query<EntryQuery>,
+) -> WebResult<arc_labs_api::EntryDiff> {
+    Ok(Json(s.api.entry_diff(&q.path, q.index)?))
+}
+
+async fn restore(
+    State(s): State<Arc<AppState>>,
+    Json(b): Json<EntryQuery>,
+) -> WebResult<arc_labs_api::SaveResult> {
+    Ok(Json(s.api.restore(&b.path, b.index)?))
+}
+
+async fn accept(
+    State(s): State<Arc<AppState>>,
+    Json(b): Json<EntryQuery>,
+) -> WebResult<arc_labs_api::SaveResult> {
+    Ok(Json(s.api.accept(&b.path, b.index)?))
+}
+
+async fn reject(State(s): State<Arc<AppState>>, Json(b): Json<EntryQuery>) -> WebResult<()> {
+    Ok(Json(s.api.reject(&b.path, b.index)?))
+}
+
+#[derive(Deserialize)]
+struct ProposeBody {
+    path: VaultPath,
+    agent: String,
+    model: String,
+    session: String,
+    reason: String,
+    content: String,
+}
+
+async fn propose(
+    State(s): State<Arc<AppState>>,
+    Json(b): Json<ProposeBody>,
+) -> WebResult<arc_labs_api::Proposal> {
+    Ok(Json(s.api.propose(&b.path, &b.agent, &b.model, &b.session, &b.reason, &b.content)?))
 }
 
 #[derive(Deserialize)]

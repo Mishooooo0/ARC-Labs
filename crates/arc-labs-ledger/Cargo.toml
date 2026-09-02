@@ -1,6 +1,6 @@
 [package]
-name         = "arc-labs-api"
-description  = "Every ARC-LABS operation, defined exactly once and transport-agnostic. Tauri commands, HTTP handlers and MCP tools are thin wrappers over this."
+name         = "arc-labs-ledger"
+description  = "Append-only provenance: who changed what, when, why, and the content to restore it."
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
@@ -13,11 +13,8 @@ thiserror     = { workspace = true }
 serde         = { workspace = true }
 serde_json    = { workspace = true }
 tracing       = { workspace = true }
-tokio         = { workspace = true }
-async-trait   = { workspace = true }
-dunce.workspace = true
-arc-labs-index.workspace = true
-arc-labs-ledger.workspace = true
+blake3        = { workspace = true }
+similar       = "2"
 
 [dev-dependencies]
-tempfile = "3.27.0"
+tempfile = "3"
