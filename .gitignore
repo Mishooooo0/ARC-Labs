@@ -1,0 +1,16 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Node
+node_modules/
+dist/
+.vite/
+
+# Generated test vaults live outside the repo by default; this catches the
+# case where someone points --out at the repo.
+fixtures/generated/
+
+# Local config / scratch
+.arc/
+*.log

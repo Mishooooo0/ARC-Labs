@@ -1,0 +1,11 @@
+# ARC-LABS is a byte-fidelity product: the whole value proposition is that a
+# vault this app touches is byte-identical to what Obsidian wrote. Git's
+# autocrlf would silently rewrite line endings on checkout and destroy the
+# compatibility fixtures — .canvas files are LF, real notes are CRLF, and both
+# must survive a clone unchanged.
+#
+# So: git does no line-ending translation anywhere in this repo. Ever.
+* -text
+
+# Fixtures are oracles. Treat them as binary so nothing can normalise them.
+fixtures/** -text -diff

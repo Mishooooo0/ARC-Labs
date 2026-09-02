@@ -1,0 +1,17 @@
+[package]
+name         = "arc-labs-api"
+description  = "Every ARC-LABS operation, defined exactly once and transport-agnostic. Tauri commands, HTTP handlers and MCP tools are thin wrappers over this."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[dependencies]
+arc-labs-core = { workspace = true }
+thiserror     = { workspace = true }
+serde         = { workspace = true }
+serde_json    = { workspace = true }
+tracing       = { workspace = true }
+tokio         = { workspace = true }
+async-trait   = { workspace = true }

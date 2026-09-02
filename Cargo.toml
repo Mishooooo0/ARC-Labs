@@ -1,0 +1,65 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/arc-labs-core",
+    "crates/arc-labs-api",
+    "crates/arc-labs-bootstrap",
+    "crates/arc-labs-server",
+    "crates/arc-labs-cli",
+    "xtask",
+]
+
+[workspace.package]
+version      = "0.1.0"
+edition      = "2021"
+rust-version = "1.88"
+license      = "MIT OR Apache-2.0"
+repository   = "https://github.com/Mishooooo0/ARC-Labs"
+
+[workspace.dependencies]
+# --- internal crates -------------------------------------------------------
+# The dependency graph is a strict one-way fan-out. arc-labs-core knows nothing
+# about Tauri, HTTP or MCP, which is what keeps every gate runnable as a plain
+# `cargo test` with no window and no socket.
+arc-labs-core      = { path = "crates/arc-labs-core" }
+arc-labs-api       = { path = "crates/arc-labs-api" }
+arc-labs-bootstrap = { path = "crates/arc-labs-bootstrap" }
+arc-labs-server    = { path = "crates/arc-labs-server" }
+
+# --- external --------------------------------------------------------------
+anyhow             = "1"
+thiserror          = "2"
+serde              = { version = "1", features = ["derive"] }
+# preserve_order is not optional: Obsidian writes .canvas nodes with unstable
+# key order and expects it back unchanged. See crates/arc-labs-canvas.
+serde_json         = { version = "1", features = ["preserve_order"] }
+toml               = "1"
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tokio              = { version = "1", features = ["rt-multi-thread", "macros", "sync", "fs", "net", "signal", "time"] }
+async-trait        = "0.1"
+clap               = { version = "4", features = ["derive"] }
+comrak             = "0.54"
+blake3             = "1"
+walkdir            = "2"
+# std::fs::canonicalize returns \?\C:\... UNC paths on Windows, which break
+# display, prefix comparison and anything that round-trips through a string.
+# dunce gives the plain path back. VaultPath depends on this being correct.
+dunce              = "1"
+which              = "8"
+axum               = { version = "0.8", features = ["ws"] }
+tower-http         = { version = "0.7", features = ["fs", "trace", "set-header"] }
+
+[profile.release]
+opt-level     = 3
+lto           = "fat"
+codegen-units = 1
+strip         = true
+# NOTE: panic stays at "unwind". A panic rendering one malformed note must not
+# take down a server holding a vault open, and Phase 5 needs catch_unwind to
+# contain a misbehaving graph node. "abort" would shrink the binary and break
+# both guarantees.
+
+[profile.dev]
+opt-level = 0
+debug     = true

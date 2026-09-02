@@ -1,0 +1,19 @@
+[package]
+name         = "arc-labs-server"
+description  = "Axum HTTP + WebSocket shell. Serves the same UI bundle the desktop app embeds, for headless Linux, browsers and Docker."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[dependencies]
+arc-labs-core = { workspace = true }
+arc-labs-api  = { workspace = true }
+anyhow        = { workspace = true }
+serde         = { workspace = true }
+serde_json    = { workspace = true }
+tracing       = { workspace = true }
+tokio         = { workspace = true }
+axum          = { workspace = true }
+tower-http    = { workspace = true }

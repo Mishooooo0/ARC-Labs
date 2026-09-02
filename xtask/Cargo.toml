@@ -1,0 +1,16 @@
+[package]
+name         = "xtask"
+description  = "Build-side tooling: fixture vault generation, phase gates, token lint. Not shipped."
+publish      = false
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+
+[dependencies]
+arc-labs-core = { workspace = true }
+anyhow        = { workspace = true }
+clap          = { workspace = true }
+walkdir       = { workspace = true }
+blake3        = { workspace = true }
+serde_json    = { workspace = true }

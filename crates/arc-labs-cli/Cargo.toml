@@ -1,0 +1,23 @@
+[package]
+name         = "arc-labs-cli"
+description  = "Composition root: run | serve | doctor | setup | reindex. The one place that knows about every other crate."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[[bin]]
+name = "arc-labs"
+path = "src/main.rs"
+
+[dependencies]
+arc-labs-core      = { workspace = true }
+arc-labs-api       = { workspace = true }
+arc-labs-bootstrap = { workspace = true }
+arc-labs-server    = { workspace = true }
+anyhow             = { workspace = true }
+clap               = { workspace = true }
+tokio              = { workspace = true }
+tracing            = { workspace = true }
+tracing-subscriber = { workspace = true }
