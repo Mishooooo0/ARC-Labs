@@ -242,6 +242,31 @@ fn templates(api: tauri::State<'_, Arc<Api>>) -> CmdResult<Vec<arc_labs_api::Tem
 }
 
 #[tauri::command]
+fn sync_status(api: tauri::State<'_, Arc<Api>>) -> CmdResult<arc_labs_api::SyncStatus> {
+    Ok(api.sync_status())
+}
+
+/// Both of these wait on a network round trip per file, so they run off the
+/// command thread — otherwise the window freezes for the length of a sync.
+#[tauri::command]
+async fn sync_preview(
+    api: tauri::State<'_, Arc<Api>>,
+) -> CmdResult<Vec<arc_labs_api::PreviewItem>> {
+    let api = Arc::clone(&api);
+    tokio::task::spawn_blocking(move || api.sync_preview())
+        .await
+        .map_err(|e| arc_labs_api::ApiError::new(arc_labs_api::ErrorCode::Io, e.to_string()))?
+}
+
+#[tauri::command]
+async fn sync_now(api: tauri::State<'_, Arc<Api>>) -> CmdResult<arc_labs_sync::pass::SyncReport> {
+    let api = Arc::clone(&api);
+    tokio::task::spawn_blocking(move || api.sync_now())
+        .await
+        .map_err(|e| arc_labs_api::ApiError::new(arc_labs_api::ErrorCode::Io, e.to_string()))?
+}
+
+#[tauri::command]
 fn create_from_template(
     api: tauri::State<'_, Arc<Api>>,
     path: VaultPath,
@@ -530,6 +555,9 @@ fn main() {
             dismiss_suggestion,
             weave_status,
             weave_pass,
+            sync_status,
+            sync_preview,
+            sync_now,
             user_active
         ])
         .setup(move |app| {

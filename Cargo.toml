@@ -57,6 +57,21 @@ clap               = { version = "4", features = ["derive"] }
 comrak             = "0.54"
 blake3             = "1"
 walkdir            = "2"
+# The one HTTP *client* in the workspace, and only arc-labs-sync may use it.
+#
+# The rule this bends said an outbound client lives solely in arc-labs-bootstrap,
+# and the rule exists so arc-labs-core cannot reach the network. arc-labs-sync is
+# a leaf above core, like arc-labs-runtime, so that guarantee is untouched.
+#
+# It is here rather than hand-written because sync must speak https: this product
+# is going public, and a client that refuses TLS forces every self-hoster to run a
+# reverse proxy just to be reachable. The existing hand-rolled client in llm.rs
+# stays exactly as it is — it talks to Ollama on loopback and needs none of this.
+# TLS is the one thing not to write by hand for software carrying whole notebooks,
+# so: rustls, through the smallest blocking wrapper that exposes it. Blocking
+# because the sync daemon is a std::thread, like Weave's, and an async client
+# would drag a runtime into it.
+ureq               = { version = "3", features = ["json"] }
 # std::fs::canonicalize returns \?\C:\... UNC paths on Windows, which break
 # display, prefix comparison and anything that round-trips through a string.
 # dunce gives the plain path back. VaultPath depends on this being correct.

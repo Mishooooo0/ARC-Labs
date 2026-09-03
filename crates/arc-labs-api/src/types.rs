@@ -529,6 +529,9 @@ pub enum EventKind {
     IndexReady,
     /// Weave produced link suggestions.
     Suggested,
+    /// A sync pass finished. Carries no path: a pass touches many notes, and an
+    /// event claiming one of them would be picking a file at random.
+    Synced,
 }
 
 // ── Settings on the wire ────────────────────────────────────────────────────

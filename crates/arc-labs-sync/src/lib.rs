@@ -35,8 +35,10 @@
 //! machine's bin.
 
 pub mod base;
+pub mod client;
 pub mod ledger;
 pub mod manifest;
+pub mod pass;
 pub mod plan;
 
 pub use manifest::{FileState, Manifest};
@@ -56,6 +58,17 @@ pub enum SyncError {
     },
     #[error("could not walk the vault: {0}")]
     Walk(String),
+    /// The hub was reached and said no.
+    #[error("{0}")]
+    Hub(String),
+    /// The hub was not reached at all. Kept separate from `Hub` because the two
+    /// need different actions: one is a setting to change, the other is a box
+    /// to turn on or a network to fix.
+    #[error("could not reach {hub}: {why}")]
+    Unreachable { hub: String, why: String },
+    /// A reply that did not make sense.
+    #[error("unexpected reply from the hub: {0}")]
+    Wire(String),
 }
 
 impl SyncError {

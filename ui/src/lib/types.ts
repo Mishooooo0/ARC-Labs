@@ -499,6 +499,45 @@ export interface Config {
   };
 }
 
+/** Where this machine stands with its vault server. Never carries the token. */
+export interface SyncStatus {
+  role: "standalone" | "client" | "hub";
+  hub: string;
+  /** Whether a token is available — never what it is. */
+  hasToken: boolean;
+  cadence: "manual" | "daily" | "weekly" | "monthly";
+  hour: number;
+  minute: number;
+  lastSyncAt?: string;
+  /** Whether this instance is set up well enough to sync at all. */
+  ready: boolean;
+  /** Why not, when it is not. Written to be acted on. */
+  blocked?: string;
+}
+
+/** One line of "what would a sync do". */
+export interface PreviewItem {
+  path: string;
+  action: string;
+  conflict: boolean;
+}
+
+/** What a sync pass actually did. */
+export interface SyncReport {
+  pushed: number;
+  pulled: number;
+  deletedHere: number;
+  deletedThere: number;
+  objectsSent: number;
+  objectsReceived: number;
+  historyMerged: number;
+  /** Left for a person. Neither copy of these was touched. */
+  conflicts: Array<{ path: string; kind: string }>;
+  /** Named failures. A pass with any of these did not record agreement, so the
+   *  next one tries again. */
+  problems: string[];
+}
+
 /** One tool the MCP server exposes, as `tools/list` returns it. */
 export interface McpTool {
   name: string;

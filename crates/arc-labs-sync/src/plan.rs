@@ -62,6 +62,19 @@ pub enum Conflict {
     LocalEditedRemoteDeleted,
 }
 
+impl Conflict {
+    /// The wire name. One spelling of each kind, so a preview and a report
+    /// cannot disagree about what to call the same situation.
+    pub fn name(self) -> &'static str {
+        match self {
+            Conflict::BothEdited => "both-edited",
+            Conflict::BothCreated => "both-created",
+            Conflict::LocalDeletedRemoteEdited => "local-deleted-remote-edited",
+            Conflict::LocalEditedRemoteDeleted => "local-edited-remote-deleted",
+        }
+    }
+}
+
 impl Action {
     pub fn path(&self) -> &str {
         match self {

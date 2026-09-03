@@ -241,6 +241,15 @@ pub fn router(api: Arc<Api>, cfg: &ServerConfig) -> Router {
         .route("/hub/object", get(hub_read_object).post(hub_write_object))
         .route("/hub/ledger/keys", get(hub_ledger_keys))
         .route("/hub/ledger", get(hub_read_ledger).post(hub_merge_ledger))
+        // ── The client half ─────────────────────────────────────────────────
+        //
+        // The endpoint that asks this machine to sync. Present whatever the
+        // role, so a standalone vault can be asked and answer plainly why not
+        // rather than 404 — "you have not connected this to a server" is a
+        // useful reply and a missing route is not.
+        .route("/sync/status", get(sync_status))
+        .route("/sync/preview", get(sync_preview))
+        .route("/sync/now", post(sync_now))
         // Anything else under /api is a route this build does not have.
         //
         // Without this it falls through to the SPA and a client asking an older
@@ -1061,6 +1070,34 @@ async fn hub_merge_ledger(
     Ok(Json(s.api.hub_merge_ledger(&q.key, &body)?))
 }
 
+async fn sync_status(State(s): State<Arc<AppState>>) -> WebResult<arc_labs_api::SyncStatus> {
+    Ok(Json(s.api.sync_status()))
+}
+
+/// What a pass would do. Changes nothing, on either side.
+async fn sync_preview(State(s): State<Arc<AppState>>) -> WebResult<Vec<arc_labs_api::PreviewItem>> {
+    let api = Arc::clone(&s.api);
+    Ok(Json(
+        tokio::task::spawn_blocking(move || api.sync_preview())
+            .await
+            .map_err(|e| ApiError::new(ErrorCode::Io, e.to_string()))??,
+    ))
+}
+
+/// Run a pass now.
+///
+/// On a blocking thread: a pass is a network round trip per file, and holding an
+/// async worker for the length of one would stall every other request on this
+/// server — including the status call the UI makes to show progress.
+async fn sync_now(State(s): State<Arc<AppState>>) -> WebResult<arc_labs_sync::pass::SyncReport> {
+    let api = Arc::clone(&s.api);
+    Ok(Json(
+        tokio::task::spawn_blocking(move || api.sync_now())
+            .await
+            .map_err(|e| ApiError::new(ErrorCode::Io, e.to_string()))??,
+    ))
+}
+
 /// Serve until the process is asked to stop.
 pub async fn serve(api: Arc<Api>, cfg: ServerConfig) -> anyhow::Result<()> {
     let app = router(api, &cfg);
@@ -1267,6 +1304,125 @@ mod tests {
         );
         // The SPA fallback still works for everything that is not /api.
         assert_eq!(code("/some/client/route".into()).await.unwrap(), "200");
+    }
+
+    /// Two real vaults, a real hub server, a real HTTP client, one pass.
+    ///
+    /// The unit tests cover the decision and the merge; this covers the thing
+    /// they cannot: that the wire protocol, the client and the API agree well
+    /// enough to actually move a notebook between two machines.
+    ///
+    /// The assertion that matters most is the last one. A note created on the
+    /// hub is restored **on the client** from history that arrived with it —
+    /// which only works if the object store travelled too. That is the case
+    /// "everything but the trash" would have missed if taken literally, and the
+    /// failure would have been silent until someone tried to undo something.
+    #[tokio::test]
+    async fn a_vault_syncs_to_a_hub_and_history_arrives_with_it() {
+        // ── the hub ─────────────────────────────────────────────────────────
+        let hub_dir = tempfile::tempdir().unwrap();
+        let hub_api = Arc::new(Api::new(
+            Config {
+                sync: arc_labs_core::SyncConfig {
+                    role: arc_labs_core::Role::Hub,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            None,
+            Capabilities::local_server(),
+        ));
+        hub_api.open_vault(hub_dir.path()).unwrap();
+        // Created through the API, so it has real history and a real object.
+        hub_api
+            .create_note(&VaultPath::new("OnTheHub.md").unwrap(), "# On the hub\n")
+            .unwrap();
+
+        let app = router(
+            Arc::clone(&hub_api),
+            &cfg(IpAddr::V4(Ipv4Addr::LOCALHOST), None),
+        );
+        let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await });
+
+        // ── the client ──────────────────────────────────────────────────────
+        let client_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            client_dir.path().join("OnTheLaptop.md"),
+            b"# On the laptop\n",
+        )
+        .unwrap();
+
+        std::env::set_var("ARC_LABS_SYNC_TEST_TOKEN", "unused-on-loopback");
+        let client_api = Arc::new(Api::new(
+            Config {
+                sync: arc_labs_core::SyncConfig {
+                    role: arc_labs_core::Role::Client,
+                    hub: format!("http://{addr}"),
+                    token_env: "ARC_LABS_SYNC_TEST_TOKEN".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            None,
+            Capabilities::desktop(),
+        ));
+        client_api.open_vault(client_dir.path()).unwrap();
+
+        // ── one pass ────────────────────────────────────────────────────────
+        let api = Arc::clone(&client_api);
+        let report = tokio::task::spawn_blocking(move || api.sync_now())
+            .await
+            .unwrap()
+            .expect("a pass against a live hub");
+
+        assert!(
+            report.problems.is_empty(),
+            "problems: {:?}",
+            report.problems
+        );
+        assert!(report.conflicts.is_empty(), "nothing was edited twice");
+        assert_eq!(report.pushed, 1, "the laptop's note should go up");
+        assert_eq!(report.pulled, 1, "the hub's note should come down");
+
+        // Both vaults now hold both notes.
+        for dir in [client_dir.path(), hub_dir.path()] {
+            assert!(
+                dir.join("OnTheHub.md").exists(),
+                "{dir:?} missing the hub's note"
+            );
+            assert!(
+                dir.join("OnTheLaptop.md").exists(),
+                "{dir:?} missing the laptop's"
+            );
+        }
+
+        // The history came too, with its real author — not re-signed by the
+        // machine that applied it.
+        let on_hub = VaultPath::new("OnTheHub.md").unwrap();
+        let timeline = client_api.timeline(&on_hub).unwrap();
+        assert_eq!(timeline.len(), 1, "one entry, the hub's creation");
+        assert_eq!(timeline[0].op, "create");
+
+        // And the payoff: restore, on the client, to a state that only ever
+        // existed on the hub. This is what the object store travelling buys.
+        std::fs::write(client_dir.path().join("OnTheHub.md"), b"# scribbled over\n").unwrap();
+        let api = Arc::clone(&client_api);
+        tokio::task::spawn_blocking(move || api.restore(&on_hub, 0))
+            .await
+            .unwrap()
+            .expect("restore from history made on another machine");
+
+        assert_eq!(
+            std::fs::read_to_string(client_dir.path().join("OnTheHub.md")).unwrap(),
+            "# On the hub\n",
+            "the object store did not travel"
+        );
+
+        std::env::remove_var("ARC_LABS_SYNC_TEST_TOKEN");
     }
 
     /// The upgrade path, as a test.

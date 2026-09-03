@@ -19,7 +19,8 @@
 import type {
   Backlink, CanvasRunnability, CanvasView, DirListing, EntryDiff, GraphData, IndexStats,
   ApiVersion, Config, Deleted, LinkSuggestion, NodeGeometry, Template, VaultEvent, NoteRef, NoteView, OutgoingLink, PassReport, Proposal, RunStatus,
-  SaveResult, SearchHit, Status, TagCount, TimelineEntry, TreeView, UnresolvedLink, VaultInfo,
+  PreviewItem, SaveResult, SearchHit, Status, SyncReport, SyncStatus, TagCount, TimelineEntry,
+  TreeView, UnresolvedLink, VaultInfo,
   WeaveStatus,
 } from "./types";
 import { CLIENT_API_MAJOR, TransportError } from "./types";
@@ -152,6 +153,11 @@ export interface Transport {
   saveTemplate(name: string, body: string, drafted: boolean): Promise<Template>;
   /** Ask a model for a template. Returns the text; writes nothing. */
   draftTemplate(description: string): Promise<string>;
+
+  syncStatus(): Promise<SyncStatus>;
+  /** What a pass would do. Changes nothing on either side. */
+  syncPreview(): Promise<PreviewItem[]>;
+  syncNow(): Promise<SyncReport>;
 
   browse(path?: string): Promise<DirListing>;
   openVault(path: string): Promise<VaultInfo>;
@@ -525,6 +531,15 @@ class ServerTransport implements Transport {
       body: JSON.stringify({ description }),
     });
   }
+  syncStatus() {
+    return this.#call<SyncStatus>("sync/status");
+  }
+  syncPreview() {
+    return this.#call<PreviewItem[]>("sync/preview");
+  }
+  syncNow() {
+    return this.#call<SyncReport>("sync/now", { method: "POST" });
+  }
 
   config() {
     return this.#call<Config>("config");
@@ -747,6 +762,15 @@ class DesktopTransport implements Transport {
   }
   draftTemplate(description: string) {
     return this.#invoke<string>("draft_template", { description });
+  }
+  syncStatus() {
+    return this.#invoke<SyncStatus>("sync_status");
+  }
+  syncPreview() {
+    return this.#invoke<PreviewItem[]>("sync_preview");
+  }
+  syncNow() {
+    return this.#invoke<SyncReport>("sync_now");
   }
 
   config() {

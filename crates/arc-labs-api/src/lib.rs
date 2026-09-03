@@ -19,6 +19,7 @@ pub mod draft;
 pub mod error;
 pub mod hub;
 pub mod runs;
+pub mod sync;
 pub mod templates;
 pub mod types;
 pub mod weave;
@@ -31,6 +32,7 @@ use arc_labs_index::{query, Index};
 
 pub use error::{ApiError, ApiResult, ErrorCode};
 pub use hub::HubManifest;
+pub use sync::{PreviewItem, SyncStatus};
 pub use templates::Template;
 pub use types::*;
 
@@ -200,6 +202,10 @@ impl Api {
     }
 
     /// Weave found something. Used from `weave.rs`, hence not private.
+    pub(crate) fn publish_synced(&self) {
+        self.publish_full(EventKind::Synced, None, None, None, "human");
+    }
+
     pub(crate) fn publish_suggested(&self) {
         self.publish_full(EventKind::Suggested, None, None, None, "agent");
     }
