@@ -134,32 +134,69 @@
       const x = positions[i * 2]!;
       const y = positions[i * 2 + 1]!;
       // Degree sets radius, so hubs read as hubs without a legend.
-      const r = (2 + Math.min(7, Math.sqrt(n.degree) * 1.6)) / scale;
+      //
+      // Two things were wrong here. The floor was 2px, which on a vault whose
+      // notes are not yet linked meant every node was a 2px dot — reported as
+      // "barely visible", and correctly. And the whole thing was divided by
+      // `scale`, which pins the radius to a constant number of SCREEN pixels:
+      // zooming in moved the nodes apart but never made one bigger, so zooming
+      // to see something better did not work at all.
+      //
+      // `scale ** 0.6` keeps most of that stability — a 5,000-node graph does
+      // not turn into overlapping blobs when you zoom out — while letting a
+      // deliberate zoom actually enlarge what you are looking at.
+      const base = 5 + Math.min(9, Math.sqrt(n.degree) * 2.1);
+      const r = base / Math.pow(scale, 0.6);
+      const focused = i === selectedIdx || i === hovered;
 
       ctx.beginPath();
       ctx.arc(x, y, r, 0, Math.PI * 2);
-      ctx.fillStyle =
-        i === selectedIdx || i === hovered ? t.nodeHi : n.isCanvas ? t.canvasNode : t.node;
+      ctx.fillStyle = focused ? t.nodeHi : n.isCanvas ? t.canvasNode : t.node;
       ctx.fill();
+
+      // A ring rather than a colour change alone: on a dark ground a hovered
+      // node and an ordinary one are two similar greys, and the difference has
+      // to survive a screenshot.
+      if (focused) {
+        ctx.beginPath();
+        ctx.arc(x, y, r + 4 / scale, 0, Math.PI * 2);
+        ctx.strokeStyle = t.nodeHi;
+        ctx.lineWidth = 1.5 / scale;
+        ctx.stroke();
+      }
     }
 
-    // Labels only when zoomed in far enough to read them, and only for nodes
-    // that earn the space. Drawing 5,000 labels would be illegible and slow.
-    if (scale > 1.4) {
+    // Labels.
+    //
+    // These used to require BOTH `scale > 1.4` and `degree >= 2`, which on a
+    // small or sparsely linked vault meant no label ever appeared at any zoom:
+    // you could zoom all the way in and still be looking at unlabelled dots.
+    //
+    // A graph small enough to label is labelled at rest, and the degree gate
+    // only applies once there are too many to draw — which is what the gate was
+    // for. The threshold drops to 1.0 so the first click of zoom does something.
+    // A small graph is labelled at rest. A large one keeps the exact threshold
+    // it always had, so this change cannot cost the 5,000-node frame budget:
+    // above 150 nodes the drawn set is identical to before, and below it the
+    // label pass is trivially small.
+    const small = data.nodes.length <= 150;
+    if (small || scale > 1.4) {
       ctx.fillStyle = t.label;
-      ctx.font = `${11 / scale}px ui-sans-serif, system-ui, sans-serif`;
+      ctx.font = `${11 / Math.pow(scale, 0.6)}px ui-sans-serif, system-ui, sans-serif`;
       ctx.textAlign = "center";
       ctx.textBaseline = "top";
       for (let i = 0; i < data.nodes.length; i++) {
         const n = data.nodes[i]!;
-        if (n.degree < 2 && i !== hovered && i !== selectedIdx) continue;
+        // On a large graph, only hubs and the focused node earn the space.
+        if (!small && n.degree < 2 && i !== hovered && i !== selectedIdx) continue;
         const x = positions[i * 2]!;
         const y = positions[i * 2 + 1]!;
         // Skip anything off screen: at 5,000 nodes most of them are.
         const sx = x * scale + tx;
         const sy = y * scale + ty;
         if (sx < -40 || sy < -20 || sx > w + 40 || sy > h + 20) continue;
-        ctx.fillText(n.title.slice(0, 28), x, y + 6 / scale);
+        const nodeR = (5 + Math.min(9, Math.sqrt(n.degree) * 2.1)) / Math.pow(scale, 0.6);
+        ctx.fillText(n.title.slice(0, 28), x, y + nodeR + 3 / scale);
       }
     }
 
