@@ -18,8 +18,17 @@ reason and a content hash.
 That is the whole pitch: the notebook is the product, the provenance is why you
 would choose it, and neither costs you the ability to walk away with your files.
 
-**Status:** Phase 0 of 7. The vault opens, the tree renders, notes render, in all
-four run modes. Editing arrives in Phase 1. See [Build phases](#build-phases).
+**Status:** Phases 0–6 are built and gated. You can open a vault, edit it, search
+it, run a canvas, reach it over MCP, and sync it to a vault server you host.
+Phase 7 — installers and a published image — is not done.
+
+**What is actually verified, and what is not.** Windows desktop and the headless
+server are built and used daily. The Docker image builds and runs. **The Linux
+desktop build has never been produced** — the toolchain is not on the machine
+this was written on — and there is **no installer** for any platform. The
+[CHANGELOG](CHANGELOG.md) is the honest ledger for this and is worth reading
+before you trust the table below. A product that asks you to keep observed and
+inferred apart should not blur them in its own README.
 
 ---
 
@@ -27,12 +36,16 @@ four run modes. Editing arrives in Phase 1. See [Build phases](#build-phases).
 
 One engine, four shells. Pick the row that matches where you are.
 
-| | Command | Needs |
-|---|---|---|
-| **Windows desktop** | `arc-labs-app` | WebView2 (ships with Windows 11) |
-| **Linux desktop** | `arc-labs-app` | `webkit2gtk-4.1` — run `arc-labs setup` |
-| **Linux headless** | `arc-labs serve --vault ~/notes` | a browser, somewhere |
-| **Docker** | `docker run --user "$(id -u):$(id -g)" -v ~/notes:/vault -p 7777:7777 arc-labs` | nothing |
+| | Command | Needs | State |
+|---|---|---|---|
+| **Windows desktop** | `arc-labs-app` | WebView2 (ships with Windows 11) | built, used daily |
+| **Linux desktop** | `arc-labs-app` | `webkit2gtk-4.1` — run `arc-labs setup` | **never built** |
+| **Linux headless** | `arc-labs serve --vault ~/notes` | a browser, somewhere | built, used daily |
+| **Docker** | `docker run --user "$(id -u):$(id -g)" -v ~/notes:/vault -p 7777:7777 arc-labs` | nothing | builds and runs |
+
+The last column is the point. Three of these have been run; one has been
+written and never compiled. Saying so costs nothing and is the difference
+between a table and a claim.
 
 The `--user` is not optional on Linux. The image runs as uid 10001, a
 bind-mounted vault belongs to whoever made it, and a mismatch means the
@@ -312,7 +325,31 @@ byte-identical" achievable rather than aspirational.
 | 4 | Canvas | 300 nodes at 60 fps; real `.canvas` fixtures round-trip byte-identical |
 | 5 | Runtime | A four-node pipeline runs offline; cancel mid-stream leaves the note byte-identical |
 | 6 | Bridge & Weave | A week of agent activity shows zero file changes without a matching accepted ledger entry; typing p99 stays under 16 ms with Weave live on 5,000 notes |
-| 7 | Ship | Installers and image run on a clean machine with no toolchain |
+| 7 | Ship | Installers and image run on a clean machine with no toolchain — **not done** |
+
+Phases 0–6 have passed their gates. Phase 7 has not started: the image builds,
+but nothing has been installed on a clean machine and there is no installer to
+install.
+
+## The vault server
+
+An always-on ARC-LABS that your machines sync to — the same binary, told it is a
+hub with `ARC_LABS_ROLE=hub`. There is no separate server build.
+
+    ARC_LABS_TOKEN=$(openssl rand -hex 24) ARC_LABS_VAULT_PATH=~/vault docker compose up -d
+
+Sync is two-way and **never merges**. A note changed on one side moves; a note
+changed on both is raised as a conflict with neither copy touched, and settling
+it records the version you did not keep before overwriting anything, so it comes
+back from the timeline in one click.
+
+Notes, canvases, attachments, ledgers and the object store all travel. The
+search index does not — it is derived and rebuilt locally. The trash does not
+either: it is per-machine undo state with its own expiry, and a deletion you made
+here should not refill from another machine's bin.
+
+The object store travelling is not optional. Restore replays content by hash, so
+a vault given a ledger without it holds a history it cannot act on.
 
 ---
 

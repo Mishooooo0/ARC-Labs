@@ -31,7 +31,7 @@ On top of that, the parts that make it not a clone:
 | Windows desktop (Tauri / WebView2) | works, built and used |
 | Headless server → browser | works, built and used |
 | Linux desktop (webkit2gtk) | **never built** — no toolchain on the build machine |
-| Docker image | **never built** — Docker daemon down on the build machine |
+| Docker image | **builds and runs** — healthy, vault open, token enforced |
 
 One engine underneath all four: `arc-labs-api` defines every operation once, and
 `ui/src/lib/transport.ts` picks Tauri `invoke()` or `fetch` at runtime. No UI
@@ -55,10 +55,14 @@ component imports `@tauri-apps/api`.
 
 - **Linux artifacts do not exist.** `.AppImage` and `.deb` are unbuilt and
   untested.
-- **The Docker image has never been built.** The `Dockerfile` and
-  `docker-compose.yml` are written and unverified, which also leaves the
-  "MCP over HTTP from the container" half of the Phase 6 gate untested. The HTTP
-  path itself is verified against the same binary outside a container.
+- **The Docker image builds and runs.** It comes up healthy, opens a bind-mounted
+  vault, enforces its token and serves the hub endpoints. Two things it revealed:
+  the compose file mounted the vault read-only, five phases after that stopped
+  being right, and `ARC_LABS_TOKEN` has to be pinned or a restart invalidates
+  every device pointed at it.
+- **The container has not been exercised over MCP.** The rest of the Phase 6
+  gate is verified against the same binary outside a container; that half is
+  still untested inside one.
 - **No installer.** There is no MSI or NSIS package yet, and nothing has been
   tested on a clean machine with no developer toolchain.
 - **Weave's default threshold (0.82) is conservative.** On a small real vault the
