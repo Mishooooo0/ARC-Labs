@@ -16,7 +16,7 @@
   import { transport } from "./lib/transport";
   import type {
     Backlink, GraphData, IndexStats, NoteRef, NoteView as Note, OutgoingLink,
-    CanvasRunnability, CanvasView, LinkSuggestion, Proposal, RunStatus, SearchHit, Status,
+    ApiVersion, CanvasRunnability, CanvasView, Config, LinkSuggestion, Proposal, RunStatus, SearchHit, Status,
     TagCount, TimelineEntry, TreeView, UnresolvedLink, VaultEvent, WeaveStatus,
   } from "./lib/types";
   import { TransportError } from "./lib/types";
@@ -32,6 +32,7 @@
   import Ask from "./components/Ask.svelte";
   import Home from "./components/Home.svelte";
   import Inbox from "./components/Inbox.svelte";
+  import Settings from "./components/Settings.svelte";
   import NoteViewer from "./components/NoteView.svelte";
   import Proposals from "./components/Proposals.svelte";
   import RunPanel from "./components/RunPanel.svelte";
@@ -41,7 +42,7 @@
   import Timeline from "./components/Timeline.svelte";
   import VaultStatus from "./components/VaultStatus.svelte";
 
-  type View = "home" | "note" | "search" | "graph" | "inbox";
+  type View = "home" | "note" | "search" | "graph" | "inbox" | "settings";
 
   const THEMES = ["arc-dark", "arc-light", "arc-terminal"] as const;
 
@@ -196,6 +197,12 @@
    * single most likely first-run problem — looked exactly like a hang.
    */
   let bootError = $state<{ message: string; needsToken: boolean } | null>(null);
+
+  // Settings.
+  let config = $state<Config | null>(null);
+  let apiVersion = $state<ApiVersion | null>(null);
+  let savingConfig = $state(false);
+  let configAdjusted = $state<string | null>(null);
   let tokenEntry = $state("");
 
   async function onVaultEvent(e: VaultEvent) {
@@ -267,7 +274,7 @@
       // The handshake first. Everything below assumes the two ends agree about
       // what the wire means, and this is where that is established. A major
       // mismatch throws here rather than halfway through rendering.
-      await transport.version();
+      apiVersion = await transport.version();
       status = await transport.status();
       bootError = null;
       if (!status.vault) {
@@ -522,6 +529,49 @@
     }
   }
 
+  async function openSettings() {
+    view = "settings";
+    configAdjusted = null;
+    try {
+      config = await transport.config();
+    } catch (e) {
+      error = message(e);
+    }
+  }
+
+  async function saveConfig(next: Config) {
+    savingConfig = true;
+    configAdjusted = null;
+    try {
+      // Render what came *back*, not what was sent: the server clamps the Weave
+      // budget, refuses to move the vault and bounds motion. A panel showing the
+      // value you typed would quietly disagree with the one in force.
+      const stored = await transport.saveConfig(next);
+      const changes: string[] = [];
+      if (stored.weave.cpuFraction !== next.weave.cpuFraction) {
+        changes.push(
+          `the CPU ceiling stayed at ${Math.round(stored.weave.cpuFraction * 100)}% — 15% is a hard limit`,
+        );
+      }
+      if (stored.ui.motion !== next.ui.motion) {
+        changes.push(`motion was clamped to ${stored.ui.motion}×`);
+      }
+      if (stored.vault !== next.vault) {
+        changes.push("the vault is changed by opening one, not here");
+      }
+      configAdjusted = changes.length ? `Saved, with adjustments: ${changes.join("; ")}.` : null;
+
+      config = stored;
+      theme = stored.ui.theme;
+      // Motion is a CSS token, so a change has to reach the document.
+      document.documentElement.style.setProperty("--arc-motion", String(stored.ui.motion));
+    } catch (e) {
+      error = message(e);
+    } finally {
+      savingConfig = false;
+    }
+  }
+
   async function openInbox() {
     view = "inbox";
     await loadInbox();
@@ -771,6 +821,7 @@
       hint: "⌘⇧T",
       run: () => (showTimeline = !showTimeline),
     },
+    { id: "settings", label: "Settings", hint: "⌘,", run: () => void openSettings() },
     { id: "theme", label: `Theme: ${theme.replace("arc-", "")}`, run: cycleTheme },
     { id: "reindex", label: "Rebuild the index", run: () => void reindex() },
   ]);
@@ -814,6 +865,11 @@
     if (e.shiftKey && k === "i") {
       e.preventDefault();
       void openInbox();
+      return;
+    }
+    if (k === "," && !e.shiftKey) {
+      e.preventDefault();
+      void openSettings();
       return;
     }
     if (e.shiftKey && k === "h") {
@@ -1019,6 +1075,23 @@
               searchHits = [];
             }}
           />
+        {:else if view === "settings"}
+          {#if config}
+            <Settings
+              {config}
+              version={apiVersion}
+              can={(c) => transport.can(c)}
+              saving={savingConfig}
+              adjusted={configAdjusted}
+              onsave={(c) => void saveConfig(c)}
+              onclose={() => (view = "home")}
+            />
+          {:else}
+            <EmptyState
+              title="Settings"
+              description="Reading the current configuration from the server."
+            />
+          {/if}
         {:else if view === "inbox"}
           <Inbox
             {suggestions}

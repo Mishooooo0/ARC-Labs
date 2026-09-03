@@ -169,6 +169,34 @@ impl Config {
         toml::to_string_pretty(self).unwrap_or_default()
     }
 
+    /// Write to disk, atomically, refusing to write something unreadable.
+    ///
+    /// Two guards, both learned the hard way elsewhere in this codebase:
+    ///
+    /// **Atomic.** A config truncated by a crash mid-write is a config that
+    /// fails to parse at next boot, and `deny_unknown_fields` means a
+    /// half-written file is a hard error rather than a shrug. Losing your
+    /// settings because the machine rebooted at the wrong instant is not a
+    /// trade anyone would make.
+    ///
+    /// **Round-tripped first.** What is serialised is parsed back before it
+    /// touches the disk. If this build can produce something it cannot read —
+    /// which is exactly what a bad `deny_unknown_fields` interaction looks
+    /// like — the write is refused and the old config survives.
+    pub fn save(&self, path: &std::path::Path) -> Result<()> {
+        let text = self.to_toml();
+
+        Config::parse(&text).map_err(|reason| Error::Config {
+            path: path.to_path_buf(),
+            reason: format!("refusing to write a config this build cannot read back: {reason}"),
+        })?;
+
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| Error::io(dir, e))?;
+        }
+        crate::atomic::replace(path, text.as_bytes())
+    }
+
     /// Vault root from the environment, if set. Checked before the config file
     /// so `ARC_LABS_VAULT=/vault` works in Docker with no config at all.
     pub fn vault_from_env() -> Option<PathBuf> {

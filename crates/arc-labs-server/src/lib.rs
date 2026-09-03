@@ -197,6 +197,7 @@ pub fn router(api: Arc<Api>, cfg: &ServerConfig) -> Router {
         .route("/weave/pass", post(weave_pass))
         .route("/mcp", post(mcp))
         .route("/events", get(events))
+        .route("/config", get(get_config).post(set_config))
         .route("/browse", get(browse))
         .route("/vault/open", post(open_vault))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth))
@@ -340,6 +341,17 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
         return false;
     }
     a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+async fn get_config(State(s): State<Arc<AppState>>) -> Json<arc_labs_api::Settings> {
+    Json(s.api.settings())
+}
+
+async fn set_config(
+    State(s): State<Arc<AppState>>,
+    Json(body): Json<arc_labs_api::Settings>,
+) -> WebResult<arc_labs_api::Settings> {
+    Ok(Json(s.api.update_settings(&body)?))
 }
 
 /// `GET /api/v1/events` — the push channel.
@@ -824,35 +836,6 @@ pub async fn serve(api: Arc<Api>, cfg: ServerConfig) -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
-mod token_tests {
-    use super::*;
-
-    /// A generated token changes on every restart, which silently invalidates
-    /// every saved URL. An always-on node needs one that outlives its container.
-    #[test]
-    fn a_fixed_token_is_honoured_and_a_weak_one_is_not() {
-        // These mutate process-wide state, so they live in one test rather than
-        // racing each other across threads.
-        let long = "0123456789abcdef0123";
-        std::env::set_var("ARC_LABS_TOKEN", long);
-        assert_eq!(generate_token(), long);
-
-        // Too short to be the only thing between a port and a vault.
-        std::env::set_var("ARC_LABS_TOKEN", "hunter2");
-        let generated = generate_token();
-        assert_ne!(generated, "hunter2");
-        assert_eq!(generated.len(), 48);
-
-        // Surrounding whitespace is a copy-paste artefact, not part of a secret.
-        std::env::set_var("ARC_LABS_TOKEN", "  0123456789abcdef0123  ");
-        assert_eq!(generate_token(), long);
-
-        std::env::remove_var("ARC_LABS_TOKEN");
-        assert_eq!(generate_token().len(), 48);
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use arc_labs_core::Config;
@@ -882,13 +865,41 @@ mod tests {
         assert!(!remote.capabilities().expose_paths);
     }
 
+    /// Both halves of token generation in one test, deliberately.
+    ///
+    /// `ARC_LABS_TOKEN` is process-global and Rust runs tests in parallel
+    /// threads, so a separate test that set it raced this one and made it fail
+    /// intermittently. One test, one sequence, no shared mutable state between
+    /// tests to reason about.
     #[test]
-    fn tokens_are_long_random_and_distinct() {
+    fn tokens_are_generated_well_and_can_be_pinned() {
+        std::env::remove_var("ARC_LABS_TOKEN");
+
         let a = generate_token();
         let b = generate_token();
         assert_eq!(a.len(), 48);
-        assert_ne!(a, b);
+        assert_ne!(a, b, "two generated tokens must differ");
         assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+
+        // A generated token changes on every restart, which silently
+        // invalidates every saved URL. An always-on node needs one that
+        // outlives its container.
+        let fixed = "0123456789abcdef0123";
+        std::env::set_var("ARC_LABS_TOKEN", fixed);
+        assert_eq!(generate_token(), fixed);
+
+        // Surrounding whitespace is a copy-paste artefact, not part of a secret.
+        std::env::set_var("ARC_LABS_TOKEN", "  0123456789abcdef0123  ");
+        assert_eq!(generate_token(), fixed);
+
+        // Too short to be the only thing between a port and a vault.
+        std::env::set_var("ARC_LABS_TOKEN", "hunter2");
+        let generated = generate_token();
+        assert_ne!(generated, "hunter2");
+        assert_eq!(generated.len(), 48);
+
+        std::env::remove_var("ARC_LABS_TOKEN");
+        assert_eq!(generate_token().len(), 48);
     }
 
     #[test]

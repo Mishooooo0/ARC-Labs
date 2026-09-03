@@ -18,7 +18,7 @@
 
 import type {
   Backlink, CanvasRunnability, CanvasView, DirListing, EntryDiff, GraphData, IndexStats,
-  ApiVersion, Deleted, LinkSuggestion, NodeGeometry, VaultEvent, NoteRef, NoteView, OutgoingLink, PassReport, Proposal, RunStatus,
+  ApiVersion, Config, Deleted, LinkSuggestion, NodeGeometry, VaultEvent, NoteRef, NoteView, OutgoingLink, PassReport, Proposal, RunStatus,
   SaveResult, SearchHit, Status, TagCount, TimelineEntry, TreeView, UnresolvedLink, VaultInfo,
   WeaveStatus,
 } from "./types";
@@ -128,6 +128,11 @@ export interface Transport {
    * keystroke must never be delayed by bookkeeping about a background task.
    */
   userActive(): void;
+
+  // ── Settings ─────────────────────────────────────────────────
+  config(): Promise<Config>;
+  /** Returns what was actually stored, which may differ from what was sent. */
+  saveConfig(config: Config): Promise<Config>;
 
   browse(path?: string): Promise<DirListing>;
   openVault(path: string): Promise<VaultInfo>;
@@ -467,6 +472,16 @@ class ServerTransport implements Transport {
     // runs in-process, does send it.
   }
 
+  config() {
+    return this.#call<Config>("config");
+  }
+  saveConfig(config: Config) {
+    return this.#call<Config>("config", {
+      method: "POST",
+      body: JSON.stringify(config),
+    });
+  }
+
   browse(path?: string) {
     const q = path ? `?path=${encodeURIComponent(path)}` : "";
     return this.#call<DirListing>(`browse${q}`);
@@ -652,6 +667,13 @@ class DesktopTransport implements Transport {
     // Deliberately not awaited and deliberately swallowing errors: this runs on
     // the keystroke path, where the only acceptable cost is the one IPC hop.
     void this.#invoke<void>("user_active").catch(() => {});
+  }
+
+  config() {
+    return this.#invoke<Config>("get_config");
+  }
+  saveConfig(config: Config) {
+    return this.#invoke<Config>("set_config", { config });
   }
 
   browse(path?: string) {

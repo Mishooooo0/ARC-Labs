@@ -221,6 +221,19 @@ fn index_stats(api: tauri::State<'_, Arc<Api>>) -> CmdResult<Q::IndexStats> {
 }
 
 #[tauri::command]
+fn get_config(api: tauri::State<'_, Arc<Api>>) -> arc_labs_api::Settings {
+    api.settings()
+}
+
+#[tauri::command]
+fn set_config(
+    api: tauri::State<'_, Arc<Api>>,
+    config: arc_labs_api::Settings,
+) -> CmdResult<arc_labs_api::Settings> {
+    api.update_settings(&config)
+}
+
+#[tauri::command]
 fn api_version(api: tauri::State<'_, Arc<Api>>) -> arc_labs_api::ApiVersion {
     api.api_version()
 }
@@ -443,6 +456,8 @@ fn main() {
             open_vault,
             pick_folder,
             api_version,
+            get_config,
+            set_config,
             create_note,
             rename_note,
             delete_note,

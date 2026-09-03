@@ -169,6 +169,12 @@
 
 <style>
   .inbox {
+    /* Each view owns its own scroll — `.pane` is a flex column holding the
+       banner as well, so scrolling the pane would carry the banner away with
+       it. Without this the document itself grows and the app chrome scrolls
+       off the top, which is what a long settings panel did. */
+    height: 100%;
+    overflow-y: auto;
     padding: var(--arc-space-5) var(--arc-space-5) var(--arc-space-7);
     max-width: 900px;
     margin: 0 auto;

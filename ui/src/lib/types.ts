@@ -451,3 +451,41 @@ export interface VaultEvent {
   /** Present on a `lagged` notice: how many events this client missed. */
   missed?: number;
 }
+
+// ── Settings ───────────────────────────────────────────────────────
+
+/**
+ * Settings, in the API's shape.
+ *
+ * Mirrors `arc_labs_api::Settings`, **not** the config file. The file is
+ * snake_case because a person edits it by hand; the wire is camelCase like
+ * every other type here. Sending the file's shape produced a 422 on every save,
+ * which is why the two are separate.
+ *
+ * The server clamps the Weave budget, bounds motion, and keeps `vault` as it
+ * was, so this is a request rather than a command — always render what comes
+ * *back* from a save.
+ */
+export interface Config {
+  vault?: string;
+  actorId?: string;
+  ui: {
+    theme: string;
+    /** Multiplies every duration in the UI. 0 disables animation entirely. */
+    motion: number;
+    density: "compact" | "comfortable";
+  };
+  model: {
+    endpoint: string;
+    instruct: string;
+    embed: string;
+    access: "local-only" | "trusted-endpoint" | "ask-each-run";
+  };
+  weave: {
+    enabled: boolean;
+    threshold: number;
+    /** Clamped server-side to the 0.15 ceiling. It is a gate, not a preference. */
+    cpuFraction: number;
+    intervalSecs: number;
+  };
+}

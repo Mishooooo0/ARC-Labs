@@ -255,10 +255,7 @@ impl Api {
         state.status = VaultStatus::Online;
 
         if let (Some(p), cfg) = (state.config_path.clone(), state.config.clone()) {
-            if let Some(dir) = p.parent() {
-                let _ = std::fs::create_dir_all(dir);
-            }
-            if let Err(e) = std::fs::write(&p, cfg.to_toml()) {
+            if let Err(e) = cfg.save(&p) {
                 tracing::warn!(path = %p.display(), error = %e, "could not persist config");
             }
         }
@@ -593,6 +590,58 @@ impl Api {
             shell: self.caps.shell,
             capabilities,
         }
+    }
+
+    /// Change settings and persist them.
+    ///
+    /// Three things are not simply taken from the caller:
+    ///
+    /// **The vault is never settable here.** It arrives from a request that may
+    /// have crossed a network, and a path is both a traversal vector and a
+    /// disclosure of the host's layout. Changing vault is [`Api::open_vault`],
+    /// which validates a root; this endpoint keeps whatever is already open.
+    ///
+    /// **Weave's CPU ceiling only goes down.** 0.15 is a spec gate, not a
+    /// preference — the whole point of the budget is that the editor outranks
+    /// the daemon, and a settings panel that could raise it would make that
+    /// negotiable.
+    ///
+    /// **Motion is clamped to something sane.** It multiplies every duration in
+    /// the UI, so a mistyped value is the difference between a smooth app and
+    /// one that appears frozen.
+    pub fn update_settings(&self, incoming: &Settings) -> ApiResult<Settings> {
+        let (current, path) = {
+            let state = self.state.read().expect("state lock poisoned");
+            (state.config.clone(), state.config_path.clone())
+        };
+
+        // Folded onto the *current* config, so `vault` — which this type does
+        // not carry — survives rather than being reset to a default by a
+        // settings save.
+        let mut incoming = incoming.onto(current.clone());
+        incoming.vault = current.vault.clone();
+        incoming.weave.cpu_fraction = incoming
+            .weave
+            .cpu_fraction
+            .clamp(0.01, arc_labs_weave::budget::DEFAULT_CPU_FRACTION);
+        incoming.weave.threshold = incoming.weave.threshold.clamp(-1.0, 1.0);
+        incoming.ui.motion = incoming.ui.motion.clamp(0.0, 3.0);
+
+        if let Some(p) = &path {
+            incoming
+                .save(p)
+                .map_err(|e| ApiError::new(ErrorCode::Config, e.to_string()))?;
+        }
+
+        let mut state = self.state.write().expect("state lock poisoned");
+        state.config = incoming.clone();
+        Ok(Settings::from(&incoming))
+    }
+
+    /// Settings as the API exposes them. See [`Settings`] for why this is not
+    /// the config file's own shape.
+    pub fn settings(&self) -> Settings {
+        Settings::from(&self.config())
     }
 
     pub fn config(&self) -> Config {
@@ -1528,6 +1577,147 @@ mod tests {
         // No subscribers at all.
         api.create_note(&vp("Alone.md"), "# Alone\n").unwrap();
         assert!(api.read_note_for_edit(&vp("Alone.md")).is_ok());
+    }
+
+    // ── Settings ────────────────────────────────────────────────────────────
+
+    fn api_with_config_file() -> (tempfile::TempDir, std::sync::Arc<Api>, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.md"), b"# A\n").unwrap();
+        let path = tmp.path().join("config.toml");
+        let api = std::sync::Arc::new(Api::new(
+            Config::default(),
+            Some(path.clone()),
+            Capabilities::desktop(),
+        ));
+        api.open_vault(tmp.path()).unwrap();
+        (tmp, api, path)
+    }
+
+    /// **The wire is camelCase; the config file is snake_case.**
+    ///
+    /// Exposing `Config` directly meant the UI sent `cpuFraction` while the
+    /// server demanded `cpu_fraction`, and every save came back 422. No type
+    /// checker could see it — JSON is untyped at the boundary — so the shape is
+    /// pinned here instead.
+    #[test]
+    fn settings_cross_the_wire_in_camel_case() {
+        let (_t, api, _p) = api_with_config_file();
+        let json = serde_json::to_value(api.settings()).unwrap();
+
+        assert!(json["weave"]["cpuFraction"].is_number(), "got {json}");
+        assert!(json["weave"]["intervalSecs"].is_number());
+        assert!(
+            json["weave"]["cpu_fraction"].is_null(),
+            "snake_case leaked onto the wire"
+        );
+
+        // And it parses back from exactly that shape.
+        let parsed: Settings = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed, api.settings());
+    }
+
+    /// The file stays snake_case, because a person edits it by hand and every
+    /// TOML file in the world looks like that.
+    #[test]
+    fn the_config_file_stays_snake_case() {
+        let (_t, api, path) = api_with_config_file();
+        let mut s = api.settings();
+        s.weave.interval_secs = 90;
+        api.update_settings(&s).unwrap();
+
+        let toml = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            toml.contains("interval_secs"),
+            "the file should read naturally: {toml}"
+        );
+        assert!(!toml.contains("intervalSecs"));
+    }
+
+    /// A settings save must not quietly reset a field it does not carry.
+    #[test]
+    fn saving_settings_leaves_the_vault_alone() {
+        let (tmp, api, _p) = api_with_config_file();
+        let mut s = api.settings();
+        s.ui.theme = "arc-terminal".into();
+        api.update_settings(&s).unwrap();
+
+        assert_eq!(api.config().vault.as_deref(), Some(tmp.path()));
+    }
+
+    /// A client with a bug should not be able to fail a whole save, nor invent
+    /// a value. Keep what works.
+    #[test]
+    fn an_unknown_enum_value_keeps_the_working_one() {
+        let (_t, api, _p) = api_with_config_file();
+        let mut nonsense = api.settings();
+        nonsense.ui.density = "spacious".into();
+        nonsense.model.access = "yolo".into();
+
+        let saved = api.update_settings(&nonsense).unwrap();
+        assert_eq!(saved.ui.density, "comfortable");
+        assert_eq!(saved.model.access, "local-only");
+    }
+
+    #[test]
+    fn settings_round_trip_to_disk_and_come_back() {
+        let (_t, api, path) = api_with_config_file();
+
+        let mut next = api.settings();
+        next.ui.theme = "arc-light".into();
+        next.model.instruct = "qwen3.5:4b".into();
+        api.update_settings(&next).unwrap();
+
+        assert_eq!(api.config().ui.theme, "arc-light");
+        // And it survives a restart, which is the only thing that makes it a
+        // setting rather than a session preference.
+        let reloaded = Config::load(&path).unwrap();
+        assert_eq!(reloaded.ui.theme, "arc-light");
+        assert_eq!(reloaded.model.instruct, "qwen3.5:4b");
+    }
+
+    /// **The budget is a gate, not a preference.** Phase 1's typing target
+    /// outranks Weave, and a settings panel that could raise the ceiling would
+    /// make that negotiable.
+    #[test]
+    fn settings_cannot_raise_weaves_cpu_ceiling() {
+        let (_t, api, _p) = api_with_config_file();
+
+        let mut greedy = api.settings();
+        greedy.weave.cpu_fraction = 0.95;
+        let saved = api.update_settings(&greedy).unwrap();
+
+        assert_eq!(saved.weave.cpu_fraction, 0.15);
+        // Downwards is fine: quieter is always allowed.
+        let mut quiet = api.settings();
+        quiet.weave.cpu_fraction = 0.02;
+        assert_eq!(
+            api.update_settings(&quiet).unwrap().weave.cpu_fraction,
+            0.02
+        );
+    }
+
+    /// A path from a request that may have crossed a network is both a
+    /// traversal vector and a disclosure of the host's layout.
+    #[test]
+    fn settings_cannot_move_the_vault() {
+        let (tmp, api, _p) = api_with_config_file();
+        let before = api.settings().vault.clone();
+
+        let mut hostile = api.settings();
+        hostile.vault = Some("/etc".into());
+        let saved = api.update_settings(&hostile).unwrap();
+
+        assert_eq!(saved.vault, before);
+        assert_eq!(api.config().vault.as_deref(), Some(tmp.path()));
+    }
+
+    #[test]
+    fn a_mistyped_motion_value_cannot_freeze_the_ui() {
+        let (_t, api, _p) = api_with_config_file();
+        let mut absurd = api.settings();
+        absurd.ui.motion = 900.0;
+        assert_eq!(api.update_settings(&absurd).unwrap().ui.motion, 3.0);
     }
 
     #[test]

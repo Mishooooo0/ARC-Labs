@@ -4,7 +4,7 @@
 //! whether it arrives via Tauri's IPC or an HTTP body. Naming it once here keeps
 //! every shell from having to remember.
 
-use arc_labs_core::{Tree, VaultPath, WikiLink};
+use arc_labs_core::{Config, Density, ModelAccess, Tree, VaultPath, WikiLink};
 use serde::{Deserialize, Serialize};
 
 /// The vault indicator in the top bar. Load-bearing from Phase 0 onward, so it
@@ -529,4 +529,129 @@ pub enum EventKind {
     IndexReady,
     /// Weave produced link suggestions.
     Suggested,
+}
+
+// ── Settings on the wire ────────────────────────────────────────────────────
+
+/// Settings, in the API's own shape.
+///
+/// Deliberately **not** `arc_labs_core::Config` sent straight out. The two have
+/// different jobs and different audiences:
+///
+/// - `config.toml` is a file a person edits by hand, so it is snake_case, which
+///   is what every TOML file in the world looks like.
+/// - The API is camelCase, like every other type here, because that is what a
+///   client written against it expects.
+///
+/// Exposing the storage type directly meant the UI sent `cpuFraction`, the
+/// server demanded `cpu_fraction`, and every save came back 422 — a mismatch no
+/// type checker could see, because JSON is untyped at the boundary. Keeping a
+/// wire type also means the file format and the API can change independently,
+/// which they will.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Settings {
+    /// Read-only here. Changing vault is `open_vault`, which validates a root.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vault: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actor_id: Option<String>,
+    pub ui: UiSettings,
+    pub model: ModelSettings,
+    pub weave: WeaveSettings,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UiSettings {
+    pub theme: String,
+    pub motion: f32,
+    pub density: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelSettings {
+    pub endpoint: String,
+    pub instruct: String,
+    pub embed: String,
+    pub access: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WeaveSettings {
+    pub enabled: bool,
+    pub threshold: f64,
+    pub cpu_fraction: f64,
+    pub interval_secs: u64,
+}
+
+impl From<&Config> for Settings {
+    fn from(c: &Config) -> Self {
+        Settings {
+            vault: c.vault.as_ref().map(|p| p.display().to_string()),
+            actor_id: c.actor_id.clone(),
+            ui: UiSettings {
+                theme: c.ui.theme.clone(),
+                motion: c.ui.motion,
+                density: match c.ui.density {
+                    Density::Compact => "compact".into(),
+                    Density::Comfortable => "comfortable".into(),
+                },
+            },
+            model: ModelSettings {
+                endpoint: c.model.endpoint.clone(),
+                instruct: c.model.instruct.clone(),
+                embed: c.model.embed.clone(),
+                access: match c.model.access {
+                    ModelAccess::LocalOnly => "local-only".into(),
+                    ModelAccess::TrustedEndpoint => "trusted-endpoint".into(),
+                    ModelAccess::AskEachRun => "ask-each-run".into(),
+                },
+            },
+            weave: WeaveSettings {
+                enabled: c.weave.enabled,
+                threshold: c.weave.threshold,
+                cpu_fraction: c.weave.cpu_fraction,
+                interval_secs: c.weave.interval_secs,
+            },
+        }
+    }
+}
+
+impl Settings {
+    /// Fold these onto an existing config.
+    ///
+    /// Takes the current config rather than building one from nothing, so a
+    /// field this type does not carry — `vault` — survives untouched instead of
+    /// being silently reset to its default by a settings save.
+    ///
+    /// Unknown enum values fall back to what is already set. A client sending
+    /// `"density": "spacious"` has a bug, and the right answer is to keep the
+    /// working value rather than fail the whole save or invent one.
+    pub fn onto(&self, mut current: Config) -> Config {
+        current.actor_id = self.actor_id.clone().filter(|s| !s.trim().is_empty());
+        current.ui.theme = self.ui.theme.clone();
+        current.ui.motion = self.ui.motion;
+        current.ui.density = match self.ui.density.as_str() {
+            "compact" => Density::Compact,
+            "comfortable" => Density::Comfortable,
+            _ => current.ui.density,
+        };
+        current.model.endpoint = self.model.endpoint.clone();
+        current.model.instruct = self.model.instruct.clone();
+        current.model.embed = self.model.embed.clone();
+        current.model.access = match self.model.access.as_str() {
+            "local-only" => ModelAccess::LocalOnly,
+            "trusted-endpoint" => ModelAccess::TrustedEndpoint,
+            "ask-each-run" => ModelAccess::AskEachRun,
+            _ => current.model.access,
+        };
+        current.weave.enabled = self.weave.enabled;
+        current.weave.threshold = self.weave.threshold;
+        current.weave.cpu_fraction = self.weave.cpu_fraction;
+        current.weave.interval_secs = self.weave.interval_secs;
+        current
+    }
 }
