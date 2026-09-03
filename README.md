@@ -32,7 +32,20 @@ One engine, four shells. Pick the row that matches where you are.
 | **Windows desktop** | `arc-labs-app` | WebView2 (ships with Windows 11) |
 | **Linux desktop** | `arc-labs-app` | `webkit2gtk-4.1` — run `arc-labs setup` |
 | **Linux headless** | `arc-labs serve --vault ~/notes` | a browser, somewhere |
-| **Docker** | `docker run -v ~/notes:/vault -p 7777:7777 arc-labs` | nothing |
+| **Docker** | `docker run --user "$(id -u):$(id -g)" -v ~/notes:/vault -p 7777:7777 arc-labs` | nothing |
+
+The `--user` is not optional on Linux. The image runs as uid 10001, a
+bind-mounted vault belongs to whoever made it, and a mismatch means the
+container cannot write the index or the ledger — the app comes up looking
+perfectly normal and silently cannot save. It now says **READ-ONLY** next to the
+vault name when that happens, and the log tells you this line, but running as
+yourself avoids it entirely. Docker Desktop on Windows and macOS papers over the
+ownership difference, so this only bites on a real Linux host.
+
+Bound to `0.0.0.0`, the container generates a bearer token and prints it once —
+read it from `docker logs`. `GET /healthz` is the one unauthenticated route, so
+the container's own healthcheck can reach it; it answers `ok` and says nothing
+about the vault.
 
 Two more, once a vault is open:
 

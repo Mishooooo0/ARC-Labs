@@ -186,6 +186,18 @@
   /** Set when a remote change lands on the note being edited with unsaved work. */
   let staleWarning = $state<string | null>(null);
 
+  /**
+   * Why the app could not start.
+   *
+   * The boot screen used to be the one surface in ARC-LABS that could show
+   * nothing useful for ever: the error banner lives inside the booted layout, so
+   * anything that failed before `status` was set left "starting…" on screen with
+   * no explanation and no way forward. A remote server with a stale token — the
+   * single most likely first-run problem — looked exactly like a hang.
+   */
+  let bootError = $state<{ message: string; needsToken: boolean } | null>(null);
+  let tokenEntry = $state("");
+
   async function onVaultEvent(e: VaultEvent) {
     // Our own doing. Reacting to it would mean the surface that just saved
     // reloads because of its own save, and the editor would fight the person
@@ -257,6 +269,7 @@
       // mismatch throws here rather than halfway through rendering.
       await transport.version();
       status = await transport.status();
+      bootError = null;
       if (!status.vault) {
         tree = null;
         return;
@@ -266,8 +279,36 @@
       status = { ...status, status: "online" };
       void loadIndex();
     } catch (e) {
-      error = message(e);
+      // If we never got as far as a status, the booted layout does not exist
+      // yet and its error banner cannot be seen. Record it for the boot screen
+      // instead of leaving "starting…" on the glass.
+      if (!status) {
+        const needsToken = e instanceof TransportError && e.code === "not_permitted";
+        bootError = {
+          message: needsToken
+            ? "This server needs an access token."
+            : message(e),
+          needsToken,
+        };
+      } else {
+        error = message(e);
+      }
     }
+  }
+
+  /** Store a pasted token and start again. */
+  function useToken() {
+    const t = tokenEntry.trim();
+    if (!t) return;
+    try {
+      sessionStorage.setItem("arc-labs-token", t);
+    } catch {
+      // Private mode. The reload below still carries it in the URL.
+    }
+    // A reload rather than a retry in place: the transport reads the token once
+    // when it is constructed, and reloading is the one way to be certain every
+    // later request uses the new one.
+    location.href = `${location.pathname}?token=${encodeURIComponent(t)}`;
   }
 
   /**
@@ -818,7 +859,39 @@
 {#if !status}
   <div class="boot">
     <ArcMark size={20} />
-    <span class="data">starting…</span>
+    {#if bootError}
+      <p class="boot-msg">{bootError.message}</p>
+
+      {#if bootError.needsToken}
+        <!-- Not an error so much as an expected state for a server bound past
+             loopback: it printed a token once at startup and this client does
+             not have it. Ask for it here rather than making someone reconstruct
+             a URL by hand. -->
+        <form
+          class="boot-token"
+          onsubmit={(e) => {
+            e.preventDefault();
+            useToken();
+          }}
+        >
+          <input
+            bind:value={tokenEntry}
+            placeholder="paste the access token"
+            spellcheck="false"
+            autocomplete="off"
+          />
+          <button type="submit" disabled={!tokenEntry.trim()}>Connect</button>
+        </form>
+        <p class="boot-hint data">
+          The server prints it once when it starts. In Docker:
+          <code>docker logs &lt;container&gt;</code>
+        </p>
+      {:else}
+        <button class="boot-retry" onclick={() => void refresh()}>Try again</button>
+      {/if}
+    {:else}
+      <span class="data">starting…</span>
+    {/if}
   </div>
 {:else if !status.vault}
   <FirstRun {status} onopened={refresh} />
@@ -829,7 +902,11 @@
         <ArcMark size={14} />
         <span class="data wordmark">ARC-LABS</span>
       </button>
-      <VaultStatus status={status.status} name={status.vault.name} />
+      <VaultStatus
+        status={status.status}
+        name={status.vault.name}
+        readOnly={status.vault.readOnly ?? false}
+      />
       <div class="spacer"></div>
 
       <SaveStateBadge state={saveState} detail={saveDetail} />
@@ -1143,6 +1220,58 @@
     padding: 0 var(--arc-space-2);
     margin-left: var(--arc-space-2);
     white-space: nowrap;
+  }
+
+  .boot-msg {
+    margin: 0;
+    color: var(--arc-fg);
+    font-size: var(--arc-text-md);
+    text-align: center;
+    max-width: 46ch;
+    line-height: var(--arc-leading);
+  }
+  .boot-token {
+    display: flex;
+    gap: var(--arc-space-2);
+  }
+  .boot-token input {
+    background: var(--arc-bg-2);
+    border: 1px solid var(--arc-line-strong);
+    border-radius: var(--arc-radius);
+    color: var(--arc-fg);
+    font-family: var(--arc-font-data);
+    font-size: var(--arc-text-sm);
+    padding: var(--arc-space-2) var(--arc-space-3);
+    min-width: 28ch;
+  }
+  .boot-token input:focus {
+    outline: none;
+    border-color: var(--arc-accent-dim);
+  }
+  .boot-token button,
+  .boot-retry {
+    background: var(--arc-bg-2);
+    border: 1px solid var(--arc-accent-dim);
+    color: var(--arc-accent);
+    border-radius: var(--arc-radius);
+    padding: var(--arc-space-2) var(--arc-space-4);
+    font-size: var(--arc-text-sm);
+    cursor: pointer;
+  }
+  .boot-token button:disabled {
+    opacity: 0.5;
+    cursor: default;
+    border-color: var(--arc-line-strong);
+    color: var(--arc-fg-faint);
+  }
+  .boot-hint {
+    margin: 0;
+    color: var(--arc-fg-faint);
+    font-size: var(--arc-text-xs);
+  }
+  .boot-hint code {
+    font-family: var(--arc-font-data);
+    color: var(--arc-fg-dim);
   }
 
   .sidehead {

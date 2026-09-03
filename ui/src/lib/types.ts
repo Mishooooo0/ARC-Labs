@@ -11,6 +11,8 @@ export type Shell = "desktop" | "server";
 
 export interface VaultInfo {
   name: string;
+  /** This process cannot write to the vault. Reading still works. */
+  readOnly?: boolean;
   /** Absent when the server is serving a client that must not learn its layout. */
   path?: string;
   noteCount: number;
@@ -100,6 +102,8 @@ export type ErrorCode =
   | "vault_not_found"
   | "not_a_directory"
   | "note_not_found"
+  /** A create or rename would land on an existing file. The UI picks another name. */
+  | "already_exists"
   | "invalid_path"
   | "not_utf8"
   | "config"

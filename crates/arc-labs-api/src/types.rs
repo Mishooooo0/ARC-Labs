@@ -36,6 +36,14 @@ pub enum Shell {
 #[serde(rename_all = "camelCase")]
 pub struct VaultInfo {
     pub name: String,
+    /// True when this process cannot write to the vault.
+    ///
+    /// Reading a vault you cannot write is a legitimate thing to do, so this is
+    /// a state rather than an error — but it has to be *visible*, because
+    /// everything else about the app looks normal and the first sign otherwise
+    /// would be a save that fails.
+    #[serde(default)]
+    pub read_only: bool,
     /// Display-only. Absent when the shell is serving a client that should not
     /// learn the server's filesystem layout.
     #[serde(skip_serializing_if = "Option::is_none")]

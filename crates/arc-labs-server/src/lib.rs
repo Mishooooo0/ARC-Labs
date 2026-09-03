@@ -83,7 +83,28 @@ impl ServerConfig {
 /// Hand-rolled rather than pulling in `rand`: this is the only random value in
 /// the product, `getrandom` is already in the tree via blake3, and a dependency
 /// whose job is one call is a dependency to audit forever.
+/// The token for a non-loopback bind: `ARC_LABS_TOKEN` if set, else a fresh one.
+///
+/// The environment variable exists because a generated token changes on every
+/// restart, and an always-on node restarts — on a host reboot, on a `docker
+/// restart`, on an image update. Every one of those silently invalidates the URL
+/// anyone had saved, and the symptom is an app that will not load rather than a
+/// message saying the token expired. A server you actually deploy wants a token
+/// that outlives its container.
+///
+/// Refuses a short one. A token is the only thing between the port and the
+/// vault, and "it was just for testing" is how a two-character token ends up on
+/// a machine that is reachable.
 pub fn generate_token() -> String {
+    if let Ok(fixed) = std::env::var("ARC_LABS_TOKEN") {
+        let fixed = fixed.trim().to_string();
+        if fixed.len() >= 16 {
+            return fixed;
+        }
+        tracing::warn!(
+            "ARC_LABS_TOKEN is shorter than 16 characters and was ignored;              generating one instead"
+        );
+    }
     let mut bytes = [0u8; 24];
     getrandom::fill(&mut bytes).expect("OS randomness unavailable");
     bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -800,6 +821,35 @@ pub async fn serve(api: Arc<Api>, cfg: ServerConfig) -> anyhow::Result<()> {
         })
         .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod token_tests {
+    use super::*;
+
+    /// A generated token changes on every restart, which silently invalidates
+    /// every saved URL. An always-on node needs one that outlives its container.
+    #[test]
+    fn a_fixed_token_is_honoured_and_a_weak_one_is_not() {
+        // These mutate process-wide state, so they live in one test rather than
+        // racing each other across threads.
+        let long = "0123456789abcdef0123";
+        std::env::set_var("ARC_LABS_TOKEN", long);
+        assert_eq!(generate_token(), long);
+
+        // Too short to be the only thing between a port and a vault.
+        std::env::set_var("ARC_LABS_TOKEN", "hunter2");
+        let generated = generate_token();
+        assert_ne!(generated, "hunter2");
+        assert_eq!(generated.len(), 48);
+
+        // Surrounding whitespace is a copy-paste artefact, not part of a secret.
+        std::env::set_var("ARC_LABS_TOKEN", "  0123456789abcdef0123  ");
+        assert_eq!(generate_token(), long);
+
+        std::env::remove_var("ARC_LABS_TOKEN");
+        assert_eq!(generate_token().len(), 48);
+    }
 }
 
 #[cfg(test)]

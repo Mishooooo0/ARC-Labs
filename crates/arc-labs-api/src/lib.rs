@@ -223,6 +223,7 @@ impl Api {
             .unwrap_or((0, 0));
         VaultInfo {
             name: vault.name(),
+            read_only: !vault.is_writable(),
             path: self
                 .caps
                 .expose_paths
@@ -237,6 +238,16 @@ impl Api {
     pub fn open_vault(&self, path: &Path) -> ApiResult<VaultInfo> {
         let vault = Vault::open(path)?;
         let info = self.vault_info(&vault);
+
+        if info.read_only {
+            // Actionable, because the cause is almost always the same one and
+            // the message that merely says "permission denied" leaves someone
+            // guessing at uids. Reading a vault you cannot write is allowed, so
+            // this is a warning and not a refusal — but it is never silent.
+            tracing::warn!(
+                "this vault is not writable by this process: saves, the index and                  the ledger will all fail. In Docker this usually means the                  container's user does not own the volume — run with                  --user \"$(id -u):$(id -g)\", or chown the vault to uid 10001."
+            );
+        }
 
         let mut state = self.state.write().expect("state lock poisoned");
         state.config.vault = Some(vault.root().path().to_path_buf());

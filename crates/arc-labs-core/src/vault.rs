@@ -94,6 +94,28 @@ impl Vault {
         Ok(render(self.read_note(path)?.text()))
     }
 
+    /// Can this process actually write here?
+    ///
+    /// Asked by *attempting* a write rather than by reading permission bits,
+    /// because the bits are not the whole answer: a container running as a
+    /// different uid than the volume's owner, a read-only mount, a full disk and
+    /// an ACL all look fine to a stat and fail on the first save.
+    ///
+    /// Found on a real deployment, where the app came up reporting VAULT ONLINE
+    /// with a silently broken index because the container's uid could not create
+    /// `.arc/`. A notebook that cannot save must say so before you type into it,
+    /// not after.
+    pub fn is_writable(&self) -> bool {
+        let probe = self.root.path().join(".arc-write-probe");
+        match std::fs::write(&probe, b"") {
+            Ok(()) => {
+                let _ = std::fs::remove_file(&probe);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
     pub fn exists(&self, path: &VaultPath) -> bool {
         self.root.resolve_existing(path).is_ok()
     }
@@ -245,6 +267,27 @@ mod tests {
     }
 
     // ── create / rename / delete ────────────────────────────────────────────
+
+    #[test]
+    fn a_normal_vault_reports_itself_writable_and_leaves_no_litter() {
+        let (t, v) = vault_with(&[(
+            "a.md", b"# A
+",
+        )]);
+        assert!(v.is_writable());
+        // The probe must clean up after itself, or every open leaves a file in
+        // someone's notes folder.
+        let leftovers: Vec<_> = std::fs::read_dir(t.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains("probe"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "the writability probe left {leftovers:?}"
+        );
+    }
 
     #[test]
     fn creating_a_note_writes_it_and_it_reads_back() {
