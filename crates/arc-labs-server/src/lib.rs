@@ -250,6 +250,7 @@ pub fn router(api: Arc<Api>, cfg: &ServerConfig) -> Router {
         .route("/sync/status", get(sync_status))
         .route("/sync/preview", get(sync_preview))
         .route("/sync/now", post(sync_now))
+        .route("/sync/resolve", post(sync_resolve))
         // Anything else under /api is a route this build does not have.
         //
         // Without this it falls through to the SPA and a client asking an older
@@ -645,10 +646,15 @@ async fn runnability(
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct StartRunBody {
     path: VaultPath,
     node: String,
-    #[serde(default)]
+    /// The one snake_case field in an otherwise camelCase API, which the UI was
+    /// converting by hand at the call site. Now camelCase like everything else,
+    /// with the old spelling kept as an alias so anything already sending it
+    /// keeps working — additive within a major, as the contract requires.
+    #[serde(default, alias = "approve_egress")]
     approve_egress: bool,
 }
 
@@ -1100,6 +1106,23 @@ async fn sync_now(State(s): State<Arc<AppState>>) -> WebResult<arc_labs_sync::pa
     ))
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ResolveBody {
+    path: VaultPath,
+    /// True to send this machine's copy up, false to take the hub's down.
+    keep_local: bool,
+}
+
+/// Settle one conflict. Never merges; the losing copy stays in its ledger.
+async fn sync_resolve(State(s): State<Arc<AppState>>, Json(b): Json<ResolveBody>) -> WebResult<()> {
+    let api = Arc::clone(&s.api);
+    tokio::task::spawn_blocking(move || api.sync_resolve(&b.path, b.keep_local))
+        .await
+        .map_err(|e| ApiError::new(ErrorCode::Io, e.to_string()))??;
+    Ok(Json(()))
+}
+
 /// Serve until the process is asked to stop.
 pub async fn serve(api: Arc<Api>, cfg: ServerConfig) -> anyhow::Result<()> {
     let app = router(api, &cfg);
@@ -1518,6 +1541,114 @@ mod tests {
         assert!(!hub_dir.path().join("Doomed.md").exists());
 
         std::env::remove_var("ARC_LABS_MULTI_TEST_TOKEN");
+    }
+
+    /// Resolving a conflict must not lose the version that lost.
+    ///
+    /// The first version of this shipped a doc comment claiming the losing copy
+    /// stayed recoverable. It did not: the timeline for a resolved note had
+    /// zero entries and the dropped text was simply gone. This is that claim as
+    /// a test, so it cannot go back to being decorative.
+    #[tokio::test]
+    async fn the_version_that_loses_a_conflict_comes_back() {
+        let hub_dir = tempfile::tempdir().unwrap();
+        std::fs::write(hub_dir.path().join("Contested.md"), b"# hub version\n").unwrap();
+
+        let hub_api = Arc::new(Api::new(
+            Config {
+                sync: arc_labs_core::SyncConfig {
+                    role: arc_labs_core::Role::Hub,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            None,
+            Capabilities::local_server(),
+        ));
+        hub_api.open_vault(hub_dir.path()).unwrap();
+
+        let app = router(
+            Arc::clone(&hub_api),
+            &cfg(IpAddr::V4(Ipv4Addr::LOCALHOST), None),
+        );
+        let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await });
+
+        let client_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            client_dir.path().join("Contested.md"),
+            b"# laptop version\n",
+        )
+        .unwrap();
+
+        std::env::set_var("ARC_LABS_RESOLVE_TEST_TOKEN", "unused-on-loopback");
+        let client = Arc::new(Api::new(
+            Config {
+                sync: arc_labs_core::SyncConfig {
+                    role: arc_labs_core::Role::Client,
+                    hub: format!("http://{addr}"),
+                    token_env: "ARC_LABS_RESOLVE_TEST_TOKEN".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            None,
+            Capabilities::desktop(),
+        ));
+        client.open_vault(client_dir.path()).unwrap();
+
+        let path = VaultPath::new("Contested.md").unwrap();
+
+        // Both sides invented the same path with different text.
+        let api = Arc::clone(&client);
+        let report = tokio::task::spawn_blocking(move || api.sync_now())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(report.conflicts.len(), 1, "both sides wrote it");
+        assert_eq!(report.conflicts[0].kind, "both-created");
+        assert_eq!(
+            std::fs::read_to_string(client_dir.path().join("Contested.md")).unwrap(),
+            "# laptop version\n",
+            "a conflict must leave both copies alone"
+        );
+
+        // Take theirs, dropping this machine's text.
+        let api = Arc::clone(&client);
+        let p = path.clone();
+        tokio::task::spawn_blocking(move || api.sync_resolve(&p, false))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(client_dir.path().join("Contested.md")).unwrap(),
+            "# hub version\n"
+        );
+
+        // The dropped version is in the timeline, and restoring gives it back
+        // exactly — one entry, one click, not a diff to read and retype.
+        let timeline = client.timeline(&path).unwrap();
+        assert_eq!(timeline.len(), 2, "the loser, then the choice");
+        assert!(timeline[0].reason.contains("did not keep"));
+        assert!(timeline[1].reason.contains("kept theirs"));
+
+        let api = Arc::clone(&client);
+        let p = path.clone();
+        tokio::task::spawn_blocking(move || api.restore(&p, 0))
+            .await
+            .unwrap()
+            .expect("restore the version that lost");
+
+        assert_eq!(
+            std::fs::read_to_string(client_dir.path().join("Contested.md")).unwrap(),
+            "# laptop version\n",
+            "the version that lost the conflict was not recoverable"
+        );
+
+        std::env::remove_var("ARC_LABS_RESOLVE_TEST_TOKEN");
     }
 
     /// The upgrade path, as a test.

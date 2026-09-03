@@ -149,6 +149,104 @@ impl crate::Api {
         Ok(report)
     }
 
+    /// Settle one conflict, by choosing which side wins.
+    ///
+    /// `keep_local` sends this machine's copy up; otherwise the hub's comes
+    /// down. Nothing is merged — there is no automatic reconciliation of two
+    /// people's prose here and there should not be.
+    ///
+    /// ## The version that loses is written down first
+    ///
+    /// Resolving destroys a real state of a real note, and a notebook whose
+    /// whole premise is that no version is lost cannot quietly drop one because
+    /// someone clicked a button. So before anything is overwritten, the losing
+    /// content is recorded as its own timeline entry — restoring to it gives
+    /// that version back exactly.
+    ///
+    /// This is deliberately unlike `hub_write`, which records nothing: that is
+    /// applying a change made elsewhere, this is a decision made **here** by the
+    /// person standing in front of it. That is precisely what the ledger is for.
+    ///
+    /// A note that is not valid UTF-8 — an image, a PDF — cannot go through the
+    /// object store, so it gets no entry and says so in the log rather than
+    /// pretending it was recorded.
+    pub fn sync_resolve(&self, path: &VaultPath, keep_local: bool) -> ApiResult<()> {
+        let hub = self.hub()?;
+        let local = self.local_side()?;
+        let p = path.as_str();
+
+        let ours = self.hub_read(path).unwrap_or_default();
+        let theirs = hub.read(p).map_err(sync_err)?;
+        let (winner, loser) = if keep_local {
+            (&ours, &theirs)
+        } else {
+            (&theirs, &ours)
+        };
+
+        self.record_resolution(path, loser, winner, keep_local);
+
+        if keep_local {
+            let generation = hub.manifest().map_err(sync_err)?.generation;
+            hub.write(p, winner, &generation).map_err(sync_err)?;
+        } else {
+            pass::Local::write(&local, p, winner)
+                .map_err(|e| ApiError::new(ErrorCode::Io, e.to_string()))?;
+        }
+
+        // The base is deliberately left alone. The next pass re-reads both
+        // sides, finds them agreeing and advances it honestly; writing it here
+        // would claim an agreement about every *other* path too, and this call
+        // knows nothing about those.
+        self.publish_synced();
+        Ok(())
+    }
+
+    /// Two entries: the version being dropped, then the choice that dropped it.
+    ///
+    /// Two rather than one because `restore` replays an entry's *after* state.
+    /// Recorded as a single entry the loser would only ever be a `before` hash —
+    /// present in the object store, but not something the timeline can put back
+    /// in one click, which is the whole point of writing it down.
+    fn record_resolution(&self, path: &VaultPath, loser: &[u8], winner: &[u8], kept_local: bool) {
+        let (Ok(loser), Ok(winner)) = (std::str::from_utf8(loser), std::str::from_utf8(winner))
+        else {
+            tracing::warn!(
+                path = %path,
+                "resolving a conflict on a file that is not text: the version not kept                  cannot be recorded in the ledger, and is gone once this is written"
+            );
+            return;
+        };
+        if loser == winner {
+            return;
+        }
+
+        let kept = if kept_local { "mine" } else { "theirs" };
+        let record = self.ledger().and_then(|l| {
+            l.record_change(
+                path,
+                self.human(),
+                arc_labs_ledger::Op::Edit,
+                "the version this sync did not keep, recorded before it was replaced",
+                None,
+                Some(loser),
+            )
+            .and_then(|_| {
+                l.record_change(
+                    path,
+                    self.human(),
+                    arc_labs_ledger::Op::Edit,
+                    format!("resolved a sync conflict, kept {kept}"),
+                    Some(loser),
+                    Some(winner),
+                )
+            })
+            .map_err(crate::ledger_err)
+        });
+        if let Err(e) = record {
+            tracing::warn!(error = %e.message, path = %path, "could not record the resolution");
+        }
+    }
+
     fn mark_synced(&self) -> ApiResult<()> {
         let (mut config, path) = {
             let state = self.state.read().expect("state lock poisoned");

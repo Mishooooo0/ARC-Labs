@@ -31,15 +31,59 @@
   let listing = $state<DirListing | null>(null);
   let typed = $state("");
 
+  /**
+   * Step two: on disk only, or connected to a vault server.
+   *
+   * **After** the vault is chosen, not alongside it. Two reasons. The screen
+   * above is the whole onboarding and the gate on it is launch-to-a-rendered-
+   * note in sixty seconds with no instructions, so it gets one primary action
+   * and nothing competing. And "sync this vault somewhere" is not a coherent
+   * question until there is a vault to sync.
+   *
+   * On disk only is one click and the default, so the fast path stays fast.
+   */
+  let step = $state<"vault" | "sync">("vault");
+  let hub = $state("");
+  let tokenEnv = $state("ARC_LABS_SYNC_TOKEN");
+
   async function open(path: string) {
     if (!path.trim()) return;
     busy = true;
     error = null;
     try {
       await transport.openVault(path);
-      onopened();
+      step = "sync";
     } catch (e) {
       error = e instanceof TransportError ? e.message : String(e);
+    } finally {
+      busy = false;
+    }
+  }
+
+  /** Finish, having chosen. `connect` false leaves the config exactly as it is. */
+  async function finish(connect: boolean) {
+    if (connect && !hub.trim()) return;
+    busy = true;
+    error = null;
+    try {
+      if (connect) {
+        const config = await transport.config();
+        config.sync = {
+          ...config.sync,
+          role: "client",
+          hub: hub.trim().replace(/\/+$/, ""),
+          tokenEnv: tokenEnv.trim(),
+          utcOffsetMinutes: -new Date().getTimezoneOffset(),
+        };
+        await transport.saveConfig(config);
+      }
+      onopened();
+    } catch (e) {
+      // Never strands anyone on this screen. The vault is already open, and a
+      // server that could not be saved is a thing to fix in Settings — not a
+      // reason to refuse to show someone their notes.
+      error = e instanceof TransportError ? e.message : String(e);
+      onopened();
     } finally {
       busy = false;
     }
@@ -78,7 +122,39 @@
       </div>
     </header>
 
-    {#if status.canPickFolder}
+    {#if step === "sync"}
+      <div class="lead">
+        <p>Where does this vault live?</p>
+      </div>
+
+      <div class="choices">
+        <button class="primary" onclick={() => finish(false)} disabled={busy}>
+          On this machine only
+        </button>
+        <p class="data note">
+          The default. Nothing leaves this computer, and you can connect a server later
+          in Settings.
+        </p>
+
+        <div class="orsync">
+          <span class="data or">or connect it to a vault server</span>
+          <input
+            class="data"
+            bind:value={hub}
+            placeholder="https://vault.example"
+            spellcheck="false"
+          />
+          <input class="data" bind:value={tokenEnv} spellcheck="false" />
+          <p class="data note">
+            The second box is the <em>name</em> of an environment variable holding the
+            vault's token — never the token itself.
+          </p>
+          <button class="secondary" onclick={() => finish(true)} disabled={busy || !hub.trim()}>
+            Connect
+          </button>
+        </div>
+      </div>
+    {:else if status.canPickFolder}
       <div class="lead">
         <p>Open a folder of markdown notes. An existing Obsidian vault works unchanged.</p>
         <button class="primary" onclick={pickNatively} disabled={busy}>
@@ -221,6 +297,53 @@
 
   .note {
     color: var(--arc-fg-faint);
+  }
+
+  /* Step two. The secondary path is visibly secondary: connecting a server is
+     a real choice, but "on this machine only" is the one most people want and
+     the one that keeps the sixty-second gate honest. */
+  .choices {
+    display: flex;
+    flex-direction: column;
+    gap: var(--arc-space-3);
+    align-items: flex-start;
+  }
+  .orsync {
+    display: flex;
+    flex-direction: column;
+    gap: var(--arc-space-2);
+    align-items: flex-start;
+    width: 100%;
+    padding-top: var(--arc-space-4);
+    border-top: 1px solid var(--arc-line);
+  }
+  .or {
+    color: var(--arc-fg-faint);
+  }
+  .orsync input {
+    width: 100%;
+    background: var(--arc-bg-2);
+    border: 0;
+    border-radius: var(--arc-radius-sm);
+    color: var(--arc-fg);
+    padding: var(--arc-space-2) var(--arc-space-3);
+  }
+  .orsync input:focus {
+    outline: none;
+  }
+  .secondary {
+    padding: var(--arc-space-2) var(--arc-space-4);
+    background: var(--arc-bg-2);
+    color: var(--arc-fg);
+    border-radius: var(--arc-radius);
+    transition: background var(--arc-dur-fast) var(--arc-ease);
+  }
+  .secondary:hover:not(:disabled) {
+    background: var(--arc-bg-3);
+  }
+  .secondary:disabled {
+    opacity: 0.5;
+    cursor: default;
   }
 
   .picker {

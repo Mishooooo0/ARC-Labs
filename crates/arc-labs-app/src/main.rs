@@ -259,6 +259,18 @@ async fn sync_preview(
 }
 
 #[tauri::command]
+async fn sync_resolve(
+    api: tauri::State<'_, Arc<Api>>,
+    path: arc_labs_core::VaultPath,
+    keep_local: bool,
+) -> CmdResult<()> {
+    let api = Arc::clone(&api);
+    tokio::task::spawn_blocking(move || api.sync_resolve(&path, keep_local))
+        .await
+        .map_err(|e| arc_labs_api::ApiError::new(arc_labs_api::ErrorCode::Io, e.to_string()))?
+}
+
+#[tauri::command]
 async fn sync_now(api: tauri::State<'_, Arc<Api>>) -> CmdResult<arc_labs_sync::pass::SyncReport> {
     let api = Arc::clone(&api);
     tokio::task::spawn_blocking(move || api.sync_now())
@@ -565,6 +577,7 @@ fn main() {
             sync_status,
             sync_preview,
             sync_now,
+            sync_resolve,
             user_active
         ])
         .setup(move |app| {

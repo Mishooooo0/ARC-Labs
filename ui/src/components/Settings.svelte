@@ -111,6 +111,27 @@
     onsave(out);
   }
 
+  /**
+   * Settle one conflict.
+   *
+   * Then re-sync, so the list on screen is what the vault actually looks like
+   * now rather than the answer from before the choice was made. A stale
+   * conflict list is worse than none: it invites someone to resolve the same
+   * note twice.
+   */
+  async function resolve(path: string, keepLocal: boolean) {
+    syncing = true;
+    syncError = null;
+    try {
+      await transport.syncResolve(path, keepLocal);
+      status = await transport.syncNow();
+    } catch (e) {
+      syncError = e instanceof Error ? e.message : String(e);
+    } finally {
+      syncing = false;
+    }
+  }
+
   async function runSync() {
     syncing = true;
     syncError = null;
@@ -479,9 +500,20 @@
                         <li>
                           <span class="data">{c.path}</span>
                           <span class="kind">{c.kind.replace(/-/g, " ")}</span>
+                          <button class="pick" onclick={() => resolve(c.path, true)}>
+                            keep mine
+                          </button>
+                          <button class="pick" onclick={() => resolve(c.path, false)}>
+                            keep theirs
+                          </button>
                         </li>
                       {/each}
                     </ul>
+                    <p class="hint">
+                      Choosing a side does not lose the other one. The version you do not
+                      keep is written to this note's timeline first, so it comes back in
+                      one click from the history rail.
+                    </p>
                   {/if}
                   {#if status.problems.length}
                     <ul class="conflicts">
@@ -805,6 +837,19 @@
     display: flex;
     gap: var(--arc-space-3);
     color: var(--arc-fg-dim);
+  }
+  .pick {
+    background: var(--arc-bg-2);
+    color: var(--arc-fg-dim);
+    border-radius: var(--arc-radius-pill);
+    padding: 0 var(--arc-space-3);
+    font-size: var(--arc-text-xs);
+    cursor: pointer;
+    transition: background var(--arc-dur-fast) var(--arc-ease);
+  }
+  .pick:hover {
+    background: var(--arc-bg-3);
+    color: var(--arc-fg);
   }
   .conflicts .bad {
     color: var(--arc-danger);

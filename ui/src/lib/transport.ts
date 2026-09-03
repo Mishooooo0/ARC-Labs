@@ -158,6 +158,8 @@ export interface Transport {
   /** What a pass would do. Changes nothing on either side. */
   syncPreview(): Promise<PreviewItem[]>;
   syncNow(): Promise<SyncReport>;
+  /** Settle one conflict. Never merges; the losing copy stays in its ledger. */
+  syncResolve(path: string, keepLocal: boolean): Promise<void>;
 
   browse(path?: string): Promise<DirListing>;
   openVault(path: string): Promise<VaultInfo>;
@@ -394,7 +396,7 @@ class ServerTransport implements Transport {
   startRun(path: string, node: string, approveEgress = false) {
     return this.#call<string>("run", {
       method: "POST",
-      body: JSON.stringify({ path, node, approve_egress: approveEgress }),
+      body: JSON.stringify({ path, node, approveEgress }),
     });
   }
   runStatus(id: string) {
@@ -567,6 +569,12 @@ class ServerTransport implements Transport {
   }
   syncNow() {
     return this.#call<SyncReport>("sync/now", { method: "POST" });
+  }
+  syncResolve(path: string, keepLocal: boolean) {
+    return this.#call<void>("sync/resolve", {
+      method: "POST",
+      body: JSON.stringify({ path, keepLocal }),
+    });
   }
 
   async config() {
@@ -803,6 +811,9 @@ class DesktopTransport implements Transport {
   }
   syncNow() {
     return this.#invoke<SyncReport>("sync_now");
+  }
+  syncResolve(path: string, keepLocal: boolean) {
+    return this.#invoke<void>("sync_resolve", { path, keepLocal });
   }
 
   async config() {
