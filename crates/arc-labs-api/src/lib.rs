@@ -893,13 +893,21 @@ impl Api {
 
     /// Who the current user is, for attribution.
     fn human(&self) -> arc_labs_ledger::Actor {
-        arc_labs_ledger::Actor::human(
-            self.state
-                .read()
-                .expect("state lock poisoned")
-                .config
-                .resolved_actor_id(),
-        )
+        let id = self
+            .state
+            .read()
+            .expect("state lock poisoned")
+            .config
+            .resolved_actor_id();
+
+        let mut actor = arc_labs_ledger::Actor::human(id);
+        // Which surface made the change. On a desktop this is one window and
+        // adds little; on a server it is the difference between "someone edited
+        // this" and being able to tell two browsers apart. Phase 3 asked for a
+        // remote mutation to be attributable to its session, and this is where
+        // that becomes true rather than intended.
+        actor.session = self.origin.lock().ok().and_then(|o| o.clone());
+        actor
     }
 
     /// A note's history, oldest first.

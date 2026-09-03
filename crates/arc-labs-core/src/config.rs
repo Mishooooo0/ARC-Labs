@@ -181,8 +181,13 @@ impl Config {
     pub fn resolved_actor_id(&self) -> String {
         self.actor_id
             .clone()
+            // Explicit, for a deployment. A container has no `$USER`, so every
+            // entry a server writes was landing in the ledger as "unknown" —
+            // which empties out the one question the ledger exists to answer.
+            .or_else(|| std::env::var("ARC_LABS_ACTOR").ok())
             .or_else(|| std::env::var("USER").ok())
             .or_else(|| std::env::var("USERNAME").ok())
+            .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "unknown".into())
     }
@@ -200,6 +205,34 @@ fn home_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A container has no `$USER`, and every ledger entry a deployed server
+    /// wrote was landing as "unknown" — which empties out the one question the
+    /// ledger exists to answer. Found by deploying and reading the result back.
+    #[test]
+    fn a_deployment_can_name_its_actor() {
+        let config = Config::default();
+
+        std::env::set_var("ARC_LABS_ACTOR", "arc1-node");
+        assert_eq!(config.resolved_actor_id(), "arc1-node");
+
+        // Whitespace is a copy-paste artefact, not part of a name.
+        std::env::set_var(
+            "ARC_LABS_ACTOR",
+            "  arc1-node 
+",
+        );
+        assert_eq!(config.resolved_actor_id(), "arc1-node");
+
+        // The config file is more explicit than the environment, so it wins.
+        let explicit = Config {
+            actor_id: Some("mishal".into()),
+            ..Default::default()
+        };
+        assert_eq!(explicit.resolved_actor_id(), "mishal");
+
+        std::env::remove_var("ARC_LABS_ACTOR");
+    }
 
     #[test]
     fn empty_config_is_valid_and_all_defaults() {
