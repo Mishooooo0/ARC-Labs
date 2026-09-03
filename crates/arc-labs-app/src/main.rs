@@ -255,8 +255,9 @@ fn save_template(
     api: tauri::State<'_, Arc<Api>>,
     name: String,
     body: String,
+    drafted: bool,
 ) -> CmdResult<arc_labs_api::Template> {
-    api.save_template(&name, &body)
+    api.save_template(&name, &body, drafted)
 }
 
 /// Drafting waits on a model, so it runs off the command thread — otherwise the

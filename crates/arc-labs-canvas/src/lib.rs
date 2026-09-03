@@ -469,6 +469,21 @@ mod tests {
         }
     }
 
+    /// Closes the loop between what "New canvas" writes and what the oracle
+    /// above tests.
+    ///
+    /// `Api::create_canvas` writes exactly `Canvas::empty().serialize()`, so
+    /// this asserts those bytes are `{}` — what Obsidian itself writes for a
+    /// fresh board, no trailing newline — and that parsing them back gives
+    /// them again. Without this the emitter and the creation path could drift
+    /// apart while both halves kept passing their own tests.
+    #[test]
+    fn a_freshly_created_canvas_is_what_obsidian_writes() {
+        let bytes = Canvas::empty().serialize();
+        assert_eq!(bytes, "{}");
+        assert_eq!(Canvas::parse(&bytes).unwrap().to_string(), bytes);
+    }
+
     #[test]
     fn malformed_input_is_an_error_not_a_panic() {
         assert!(matches!(

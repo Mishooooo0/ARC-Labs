@@ -747,9 +747,16 @@
     }
   }
 
+  /**
+   * Save a drafted template.
+   *
+   * `true` is not a parameter here because the only way to reach this is the
+   * button under the draft preview. If a hand-written template ever gets its
+   * own save, that one passes `false` — and the flag exists so it can.
+   */
   async function saveTemplate(name: string, body: string) {
     try {
-      await transport.saveTemplate(name, body);
+      await transport.saveTemplate(name, body, true);
       templates = await transport.templates();
       await refreshTree();
     } catch (e) {

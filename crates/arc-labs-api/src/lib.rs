@@ -421,6 +421,22 @@ impl Api {
     /// Refuses to overwrite. The caller gets `AlreadyExists` and is expected to
     /// pick another name — [`Api::unique_note_path`] does that for the UI.
     pub fn create_note(&self, path: &VaultPath, text: &str) -> ApiResult<NoteView> {
+        self.create_note_because(path, text, "created")
+    }
+
+    /// `create_note`, with the reason spelled out.
+    ///
+    /// A ledger entry that says "created" for every creation is true and
+    /// useless. Where the caller knows something the entry should carry — that
+    /// this file started as a model's draft, and which model — it says so
+    /// here, so the timeline can answer the question rather than only record
+    /// that something happened.
+    pub(crate) fn create_note_because(
+        &self,
+        path: &VaultPath,
+        text: &str,
+        reason: &str,
+    ) -> ApiResult<NoteView> {
         self.note_user_activity();
         self.with_vault(|v| Ok(v.create_note(path, text)?))?;
 
@@ -429,7 +445,7 @@ impl Api {
                 path,
                 self.human(),
                 arc_labs_ledger::Op::Create,
-                "created",
+                reason,
                 None,
                 Some(text),
             )

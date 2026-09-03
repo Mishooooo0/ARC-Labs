@@ -389,13 +389,17 @@ async fn templates(State(s): State<Arc<AppState>>) -> WebResult<Vec<arc_labs_api
 struct SaveTemplateBody {
     name: String,
     body: String,
+    /// Absent from an older client, which means "not drafted" — the honest
+    /// reading, since a client that predates drafting cannot have drafted it.
+    #[serde(default)]
+    drafted: bool,
 }
 
 async fn save_template(
     State(s): State<Arc<AppState>>,
     Json(b): Json<SaveTemplateBody>,
 ) -> WebResult<arc_labs_api::Template> {
-    Ok(Json(s.api.save_template(&b.name, &b.body)?))
+    Ok(Json(s.api.save_template(&b.name, &b.body, b.drafted)?))
 }
 
 #[derive(Deserialize)]

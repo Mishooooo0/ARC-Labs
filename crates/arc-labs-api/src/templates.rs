@@ -116,7 +116,16 @@ impl crate::Api {
     ///
     /// Creates the templates folder on demand rather than at vault open: an
     /// empty `Templates/` in every vault that never uses one is litter.
-    pub fn save_template(&self, name: &str, body: &str) -> ApiResult<Template> {
+    ///
+    /// `drafted` names the model in the ledger entry. It is a **human** write
+    /// either way — you asked for the draft, you read it in the window, you
+    /// edited it and you pressed the button, which is the opposite of the
+    /// proposal path and why this is not one. But "created" alone would lose
+    /// the one fact worth keeping about where the words came from, and the
+    /// caller is the only thing that knows it. The model's name comes from
+    /// config rather than from the caller: a client should not get to write
+    /// whatever it likes into the provenance record.
+    pub fn save_template(&self, name: &str, body: &str, drafted: bool) -> ApiResult<Template> {
         let root = self.templates_root();
         if root.is_empty() {
             return Err(ApiError::new(
@@ -134,9 +143,17 @@ impl crate::Api {
         }
 
         let path = VaultPath::new(format!("{root}/{stem}.md")).map_err(ApiError::from)?;
+        let reason = if drafted {
+            format!(
+                "drafted with {}, read and saved",
+                self.config().model.instruct
+            )
+        } else {
+            "created".to_string()
+        };
         // `create_note` refuses to overwrite, so saving a template over an
         // existing one is an error the caller resolves rather than silent loss.
-        self.create_note(&path, body)?;
+        self.create_note_because(&path, body, &reason)?;
 
         Ok(Template {
             path: path.as_str().to_string(),
@@ -182,5 +199,43 @@ mod tests {
     fn a_template_with_no_variables_is_copied_verbatim() {
         let body = "# Fixed\n\nNothing to substitute.\n";
         assert_eq!(substitute(body, "X", "2026-09-03T02:18:34Z"), body);
+    }
+
+    /// A drafted template is a **human** write — asked for, read, edited,
+    /// saved — and the timeline has to say so in amber. But "created" alone
+    /// would lose the one fact worth keeping about where the words came from,
+    /// so the model is named in the reason. Both halves are asserted here
+    /// because getting either one wrong is a provenance bug, and provenance is
+    /// the reason this product exists.
+    #[test]
+    fn a_drafted_template_is_yours_and_names_the_model() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut config = arc_labs_core::Config::default();
+        config.model.instruct = "qwen3.5:0.8b".into();
+
+        let api = crate::Api::new(config, None, crate::Capabilities::desktop());
+        api.open_vault(tmp.path()).unwrap();
+
+        let t = api.save_template("Meeting", "# {{title}}\n", true).unwrap();
+        assert_eq!(t.path, "Templates/Meeting.md");
+
+        let entry = &api.timeline(&VaultPath::new(&t.path).unwrap()).unwrap()[0];
+        assert_eq!(
+            entry.actor_kind, "human",
+            "you asked for it and you saved it"
+        );
+        assert_eq!(entry.op, "create");
+        assert!(
+            entry.reason.contains("qwen3.5:0.8b"),
+            "the model belongs in the reason, got {:?}",
+            entry.reason
+        );
+
+        // A template that was simply typed says nothing about a model, because
+        // no model was involved. Naming one anyway would be the same lie in the
+        // other direction.
+        let plain = api.save_template("Typed", "# {{title}}\n", false).unwrap();
+        let entry = &api.timeline(&VaultPath::new(&plain.path).unwrap()).unwrap()[0];
+        assert_eq!(entry.reason, "created");
     }
 }

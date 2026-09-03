@@ -148,7 +148,8 @@ export interface Transport {
   createCanvas(path: string): Promise<void>;
   createFromTemplate(path: string, template: string): Promise<NoteView>;
   templates(): Promise<Template[]>;
-  saveTemplate(name: string, body: string): Promise<Template>;
+  /** `drafted` names the model in the ledger entry. */
+  saveTemplate(name: string, body: string, drafted: boolean): Promise<Template>;
   /** Ask a model for a template. Returns the text; writes nothing. */
   draftTemplate(description: string): Promise<string>;
 
@@ -512,10 +513,10 @@ class ServerTransport implements Transport {
   templates() {
     return this.#call<Template[]>("templates");
   }
-  saveTemplate(name: string, body: string) {
+  saveTemplate(name: string, body: string, drafted: boolean) {
     return this.#call<Template>("template/save", {
       method: "POST",
-      body: JSON.stringify({ name, body }),
+      body: JSON.stringify({ name, body, drafted }),
     });
   }
   draftTemplate(description: string) {
@@ -741,8 +742,8 @@ class DesktopTransport implements Transport {
   templates() {
     return this.#invoke<Template[]>("templates");
   }
-  saveTemplate(name: string, body: string) {
-    return this.#invoke<Template>("save_template", { name, body });
+  saveTemplate(name: string, body: string, drafted: boolean) {
+    return this.#invoke<Template>("save_template", { name, body, drafted });
   }
   draftTemplate(description: string) {
     return this.#invoke<string>("draft_template", { description });
