@@ -488,6 +488,15 @@ export interface Config {
     cpuFraction: number;
     intervalSecs: number;
   };
+  trash: {
+    /**
+     * Days a deleted note's copy is kept on disk. `0` keeps it for ever.
+     *
+     * This is not how long a note is recoverable — the ledger keeps content
+     * for ever and restore replays from it. What expires is the second copy.
+     */
+    retentionDays: number;
+  };
 }
 
 /** One tool the MCP server exposes, as `tools/list` returns it. */

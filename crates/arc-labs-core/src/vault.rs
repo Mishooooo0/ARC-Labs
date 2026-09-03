@@ -282,6 +282,69 @@ impl Vault {
         std::fs::remove_file(&abs).map_err(|e| Error::io(&abs, e))?;
         Ok(grave)
     }
+
+    /// Drop trashed copies older than `retention_days`. Returns how many went.
+    ///
+    /// **The expiry clock is already in the filename.** `delete_note` names
+    /// every grave `<unix_secs>-<name>`, so this needs no sidecar file, no
+    /// index, and no second answer to "when was this deleted" that could
+    /// disagree with the first.
+    ///
+    /// `now_secs` is passed in rather than read from the clock so a test can
+    /// age a file without waiting a week.
+    ///
+    /// This is not losing the note. Restore replays content from the ledger's
+    /// object store by hash and never from here; what expires is the second
+    /// copy that exists in case the first mechanism is the thing that failed.
+    pub fn purge_trash(&self, retention_days: u32, now_secs: u64) -> Result<usize> {
+        // Keeping for ever is a real answer, and it is the one that does
+        // nothing rather than the one that deletes everything.
+        if retention_days == 0 {
+            return Ok(0);
+        }
+        let trash = self.root.path().join(".arc").join("trash");
+        if !trash.is_dir() {
+            return Ok(0);
+        }
+
+        let cutoff = now_secs.saturating_sub(u64::from(retention_days) * 86_400);
+        let mut purged = 0;
+
+        for bucket in std::fs::read_dir(&trash)
+            .map_err(|e| Error::io(&trash, e))?
+            .flatten()
+        {
+            let dir = bucket.path();
+            if !dir.is_dir() {
+                continue;
+            }
+            for grave in std::fs::read_dir(&dir)
+                .map_err(|e| Error::io(&dir, e))?
+                .flatten()
+            {
+                let file = grave.path();
+                let Some(name) = file.file_name().and_then(|n| n.to_str()) else {
+                    continue;
+                };
+                // Anything whose name this does not understand is left alone.
+                // Deleting a file because it did not match an expected shape is
+                // how a cleanup routine becomes the bug it was meant to prevent.
+                let Some(stamp) = name
+                    .split_once('-')
+                    .and_then(|(s, _)| s.parse::<u64>().ok())
+                else {
+                    continue;
+                };
+                if stamp < cutoff && std::fs::remove_file(&file).is_ok() {
+                    purged += 1;
+                }
+            }
+            // Tidy the bucket if it emptied. Failure is not an error: an empty
+            // directory is untidy, not broken.
+            let _ = std::fs::remove_dir(&dir);
+        }
+        Ok(purged)
+    }
 }
 
 #[cfg(test)]
@@ -431,6 +494,81 @@ mod tests {
         assert!(grave.exists(), "nothing landed in the trash");
         assert_eq!(std::fs::read(&grave).unwrap(), b"# Gone\nbut not lost\n");
         assert!(grave.to_string_lossy().contains("trash"));
+    }
+
+    /// The whole point of a retention window: recent deletes survive it.
+    #[test]
+    fn a_fresh_delete_is_not_swept_up() {
+        let (_t, v) = vault_with(&[("Keep.md", b"# Keep\n")]);
+        let grave = v.delete_note(&vp("Keep.md")).unwrap();
+
+        let now = now_secs();
+        assert_eq!(v.purge_trash(7, now).unwrap(), 0);
+        assert!(
+            grave.exists(),
+            "a note deleted seconds ago must still be there"
+        );
+    }
+
+    #[test]
+    fn a_trashed_note_past_the_window_goes() {
+        let (_t, v) = vault_with(&[("Old.md", b"# Old\n")]);
+        let grave = v.delete_note(&vp("Old.md")).unwrap();
+
+        // Eight days later, with a seven-day window.
+        let now = now_secs() + 8 * 86_400;
+        assert_eq!(v.purge_trash(7, now).unwrap(), 1);
+        assert!(!grave.exists());
+        // And the bucket it lived in does not linger as an empty directory.
+        assert!(!grave.parent().unwrap().exists());
+    }
+
+    /// `0` is "keep for ever", and it is deliberately the value that does
+    /// nothing rather than the value that deletes everything.
+    #[test]
+    fn zero_days_keeps_everything_for_ever() {
+        let (_t, v) = vault_with(&[("Forever.md", b"# Forever\n")]);
+        let grave = v.delete_note(&vp("Forever.md")).unwrap();
+
+        // Ten years on.
+        let now = now_secs() + 3650 * 86_400;
+        assert_eq!(v.purge_trash(0, now).unwrap(), 0);
+        assert!(grave.exists());
+    }
+
+    /// A cleanup routine that deletes what it cannot parse is the bug it was
+    /// written to prevent.
+    #[test]
+    fn a_filename_it_does_not_understand_is_left_alone() {
+        let (t, v) = vault_with(&[("A.md", b"# A\n")]);
+        v.delete_note(&vp("A.md")).unwrap();
+
+        let bucket = std::fs::read_dir(t.path().join(".arc").join("trash"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let stranger = bucket.join("not-a-timestamp.md");
+        std::fs::write(&stranger, b"someone else put this here\n").unwrap();
+
+        let now = now_secs() + 3650 * 86_400;
+        // The real grave goes; the file with no timestamp stays.
+        assert_eq!(v.purge_trash(7, now).unwrap(), 1);
+        assert!(stranger.exists());
+    }
+
+    #[test]
+    fn purging_a_vault_that_has_never_deleted_anything_is_fine() {
+        let (_t, v) = vault_with(&[("A.md", b"# A\n")]);
+        assert_eq!(v.purge_trash(7, now_secs()).unwrap(), 0);
+    }
+
+    fn now_secs() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
     }
 
     #[test]

@@ -559,6 +559,7 @@ pub struct Settings {
     pub ui: UiSettings,
     pub model: ModelSettings,
     pub weave: WeaveSettings,
+    pub trash: TrashSettings,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -585,6 +586,13 @@ pub struct WeaveSettings {
     pub threshold: f64,
     pub cpu_fraction: f64,
     pub interval_secs: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrashSettings {
+    /// Days a deleted note's copy is kept. `0` keeps it for ever.
+    pub retention_days: u32,
 }
 
 impl From<&Config> for Settings {
@@ -615,6 +623,9 @@ impl From<&Config> for Settings {
                 threshold: c.weave.threshold,
                 cpu_fraction: c.weave.cpu_fraction,
                 interval_secs: c.weave.interval_secs,
+            },
+            trash: TrashSettings {
+                retention_days: c.trash.retention_days,
             },
         }
     }
@@ -652,6 +663,11 @@ impl Settings {
         current.weave.threshold = self.weave.threshold;
         current.weave.cpu_fraction = self.weave.cpu_fraction;
         current.weave.interval_secs = self.weave.interval_secs;
+        // Capped at ten years. Not a policy about how long anyone should keep a
+        // deleted note — a guard so a client cannot send a value whose seconds
+        // overflow the cutoff arithmetic and turn "keep for a while" into
+        // "purge everything".
+        current.trash.retention_days = self.trash.retention_days.min(3650);
         current
     }
 }

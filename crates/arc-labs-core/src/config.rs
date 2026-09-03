@@ -43,6 +43,9 @@ pub struct Config {
     #[serde(default)]
     pub weave: WeaveConfig,
 
+    #[serde(default)]
+    pub trash: TrashConfig,
+
     /// Folder holding note templates, relative to the vault root.
     ///
     /// A setting rather than a constant because plenty of vaults already keep
@@ -134,6 +137,31 @@ pub struct WeaveConfig {
     pub interval_secs: u64,
 }
 
+/// How long a deleted note's copy survives on disk.
+///
+/// The ledger and its object store are the primary way a deleted note comes
+/// back, and they keep it for ever. The trash copy is a **second** guarantee —
+/// against a bad click, a corrupt ledger, or a bug in the restore path — and
+/// unlike the ledger it costs a full copy of every note ever deleted, for ever.
+/// So this one expires and the ledger does not.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TrashConfig {
+    /// Days a deleted note stays in `.arc/trash/` before it is purged.
+    ///
+    /// `0` keeps it for ever. Purging is not losing the note: restore replays
+    /// content from the object store by hash, never from the trash copy.
+    pub retention_days: u32,
+}
+
+impl Default for TrashConfig {
+    fn default() -> Self {
+        // A week. Long enough to notice a mistake, short enough that a vault
+        // does not silently carry every note you ever deleted.
+        TrashConfig { retention_days: 7 }
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Config {
@@ -142,6 +170,7 @@ impl Default for Config {
             ui: UiConfig::default(),
             model: ModelConfig::default(),
             weave: WeaveConfig::default(),
+            trash: TrashConfig::default(),
             templates_folder: default_templates_folder(),
         }
     }

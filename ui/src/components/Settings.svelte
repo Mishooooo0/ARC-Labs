@@ -38,7 +38,7 @@
   let { config, version, can, saving = false, adjusted = null, onsave, onclose }: Props =
     $props();
 
-  type Category = "appearance" | "identity" | "models" | "weave" | "mcp" | "sync";
+  type Category = "appearance" | "identity" | "vault" | "models" | "weave" | "mcp" | "sync";
   let category = $state<Category>("appearance");
 
   // `untrack` because this is the initial value on purpose: the re-sync below
@@ -88,6 +88,7 @@
   const CATEGORIES: Array<[Category, string]> = [
     ["appearance", "Appearance"],
     ["identity", "Identity"],
+    ["vault", "Vault"],
     ["models", "Models"],
     ["weave", "Weave"],
     ["mcp", "MCP"],
@@ -207,6 +208,32 @@
               Stamped on every change you make. On a server this is what tells your edits
               apart from anyone else's — a vault where everyone is <code>unknown</code>
               cannot answer who changed a note.
+            </p>
+          </div>
+        {:else if category === "vault"}
+          <div class="row">
+            <span class="label">Keep deleted notes for</span>
+            <div class="days">
+              <input
+                class="text num"
+                type="number"
+                min="0"
+                max="3650"
+                bind:value={draft.trash.retentionDays}
+              />
+              <span class="data unit">
+                {draft.trash.retentionDays === 0 ? "for ever" : "days"}
+              </span>
+            </div>
+            <p class="hint">
+              A deleted note leaves a copy in the vault's trash. After this many days
+              that copy is removed; <code>0</code> keeps it for ever.
+            </p>
+            <p class="hint">
+              This is not how long a note stays recoverable. Restore replays content
+              from the ledger, which keeps it for ever — what expires here is the
+              second copy, the one that exists in case the ledger is the thing that
+              went wrong.
             </p>
           </div>
         {:else if category === "models"}
@@ -632,6 +659,20 @@
     font-size: var(--arc-text-xs);
     line-height: var(--arc-leading);
   }
+  .days {
+    display: flex;
+    align-items: center;
+    gap: var(--arc-space-3);
+  }
+  .num {
+    width: 6rem;
+    flex: none;
+  }
+  .unit {
+    font-size: var(--arc-text-sm);
+    color: var(--arc-fg-faint);
+  }
+
   .tools {
     list-style: none;
     margin: 0 0 var(--arc-space-4);

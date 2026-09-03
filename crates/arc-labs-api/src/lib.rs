@@ -262,6 +262,20 @@ impl Api {
                 tracing::warn!(path = %p.display(), error = %e, "could not persist config");
             }
         }
+
+        // Expire old trash on the way in. Opening a vault is the moment the
+        // retention window is actually noticed, and it costs one directory walk
+        // over a tree that only holds deleted notes.
+        let days = state.config.trash.retention_days;
+        if let Some(v) = state.vault.as_ref() {
+            match v.purge_trash(days, now_secs()) {
+                Ok(n) if n > 0 => tracing::info!(purged = n, days, "expired trashed notes"),
+                Ok(_) => {}
+                // Never fatal. Failing to tidy is not a reason to refuse to open
+                // someone's notebook.
+                Err(e) => tracing::warn!(error = %e, "could not purge the trash"),
+            }
+        }
         Ok(info)
     }
 
@@ -610,6 +624,12 @@ impl Api {
         if let Some(index) = self.index.lock().expect("index lock poisoned").as_ref() {
             let _ = index.forget_note(path);
         }
+
+        // Again here, because a server can run for months without reopening a
+        // vault, and a retention window that only applies at startup is not a
+        // retention window. Deleting is also exactly when the trash grew.
+        let days = self.config().trash.retention_days;
+        let _ = self.with_vault(|v| Ok(v.purge_trash(days, now_secs())));
 
         self.publish(EventKind::Deleted, Some(path), None);
         Ok(Deleted {
@@ -1093,16 +1113,33 @@ impl Api {
     pub fn restore(&self, path: &VaultPath, index: usize) -> ApiResult<SaveResult> {
         let ledger = self.ledger()?;
         let target = ledger.content_at(path, index).map_err(ledger_err)?;
-        let current = self.with_vault(|v| Ok(v.read_note(path)?))?;
 
-        let saved = self.with_vault(|v| Ok(v.write_note(path, &current, &target)?))?;
+        // The note may not be there to read. Restoring a *deleted* note is the
+        // most valuable thing this function does and the case where the file is
+        // guaranteed to be missing, so an absent note is a branch here rather
+        // than an error — it used to be the latter, which made "undo a delete"
+        // fail at the last step even though the content was sitting in the
+        // object store all along.
+        let current = match self.with_vault(|v| Ok(v.read_note(path)?)) {
+            Ok(n) => Some(n),
+            Err(e) if e.code == ErrorCode::NoteNotFound => None,
+            Err(e) => return Err(e),
+        };
+
+        let saved = match &current {
+            Some(c) => self.with_vault(|v| Ok(v.write_note(path, c, &target)?))?,
+            None => {
+                let bytes = self.with_vault(|v| Ok(v.create_note(path, &target)?))?;
+                arc_labs_core::Saved::Written { bytes }
+            }
+        };
         ledger
             .record_change(
                 path,
                 self.human(),
                 arc_labs_ledger::Op::Edit,
                 format!("restored to entry {index}"),
-                Some(current.text()),
+                current.as_ref().map(|c| c.text()),
                 Some(&target),
             )
             .map_err(ledger_err)?;
@@ -1385,6 +1422,17 @@ impl Api {
             entries,
         })
     }
+}
+
+/// Seconds since the epoch, for the trash retention window.
+///
+/// A clock going backwards yields 0, which makes every window look infinitely
+/// wide and purges nothing. That is the right way for this to fail.
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 fn canvas_err(e: arc_labs_canvas::CanvasError) -> ApiError {
@@ -2186,6 +2234,85 @@ mod tests {
         let t = api.timeline(&p).unwrap();
         assert_eq!(t[1].op, "reject");
         assert!(!t[1].touched_file);
+    }
+
+    /// The test the trash retention window rests on.
+    ///
+    /// Trash expires; the ledger does not. If a deleted note could only come
+    /// back from the trash copy, then purging it after seven days would be
+    /// permanent loss dressed up as tidying. It cannot, and this is the proof:
+    /// the note comes back with the trash already gone.
+    #[test]
+    fn a_deleted_note_comes_back_after_its_trash_has_been_purged() {
+        let (_t, api) = api_with_vault(Capabilities::desktop());
+        let p = VaultPath::new("Notes/Gone.md").unwrap();
+        let body = "# Gone
+
+but recoverable
+";
+
+        api.create_note(&p, body).unwrap();
+        api.delete_note(&p).unwrap();
+
+        // Wind the clock far past any window and take the trash away entirely.
+        let purged = api
+            .with_vault(|v| Ok(v.purge_trash(7, u64::MAX / 2).unwrap()))
+            .unwrap();
+        assert_eq!(purged, 1, "the trash copy should be gone");
+
+        // The delete is the entry someone would click, so it is the one that
+        // has to work — not "the entry before the one you meant".
+        let timeline = api.timeline(&p).unwrap();
+        let delete_at = timeline
+            .iter()
+            .position(|e| e.op == "delete")
+            .expect("a delete entry");
+
+        api.restore(&p, delete_at).unwrap();
+
+        let back = api.read_note_for_edit(&p).unwrap();
+        assert_eq!(
+            back.text.as_deref(),
+            Some(body),
+            "byte-for-byte, or it is not a restore"
+        );
+
+        // And the restore is itself in the history, attributed.
+        let after = api.timeline(&p).unwrap();
+        let last = after.last().unwrap();
+        assert_eq!(last.op, "edit");
+        assert_eq!(last.actor_kind, "human");
+        assert!(last.reason.contains("restored"), "got {:?}", last.reason);
+    }
+
+    /// The harder half of the same guarantee.
+    ///
+    /// A note written in Obsidian and never edited here has a `delete` as its
+    /// *only* ledger entry — there is no earlier state to walk back to. Its
+    /// content still reaches the object store as the delete's `before`, and
+    /// that is the only thing standing between the user and real loss once the
+    /// trash has expired.
+    #[test]
+    fn a_note_this_app_only_ever_deleted_still_comes_back() {
+        let (_t, api) = api_with_vault(Capabilities::desktop());
+        // `a.md` was written straight to disk by the fixture, exactly as another
+        // editor would have left it. ARC-LABS never saw it created.
+        let p = VaultPath::new("a.md").unwrap();
+        let original = api.read_note_for_edit(&p).unwrap().text.unwrap();
+
+        api.delete_note(&p).unwrap();
+        api.with_vault(|v| Ok(v.purge_trash(7, u64::MAX / 2).unwrap()))
+            .unwrap();
+
+        let timeline = api.timeline(&p).unwrap();
+        assert_eq!(timeline.len(), 1, "a delete and nothing before it");
+        assert_eq!(timeline[0].op, "delete");
+
+        api.restore(&p, 0).unwrap();
+        assert_eq!(
+            api.read_note_for_edit(&p).unwrap().text.as_deref(),
+            Some(original.as_str())
+        );
     }
 
     #[test]

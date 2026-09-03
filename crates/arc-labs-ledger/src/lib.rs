@@ -283,11 +283,27 @@ impl Ledger {
 
         // `reject` records what was refused, not a state the note was ever in;
         // restoring "to" one means restoring to the state before it.
+        //
+        // `delete` is the same shape for a different reason: it has no `after`
+        // because there is nothing after it, so the state someone means when
+        // they click it is the one it destroyed. Its `before` is exactly that
+        // and is already in the object store, put there by `record_change`.
+        //
+        // Reaching for `before` rather than walking back to an earlier `after`
+        // matters for the note ARC-LABS only ever saw as a file: one written in
+        // Obsidian, or arriving from another machine, has a `delete` as its
+        // *only* entry, so there is no earlier `after` to find. Without this,
+        // the ledger holds that note's content and cannot hand it back.
         let hash = match entry.op {
             Op::Reject => entries[..index]
                 .iter()
                 .rev()
                 .find_map(|e| e.after.clone())
+                .ok_or(LedgerError::NothingToRestore { index })?,
+            Op::Delete => entry
+                .before
+                .clone()
+                .or_else(|| entries[..index].iter().rev().find_map(|e| e.after.clone()))
                 .ok_or(LedgerError::NothingToRestore { index })?,
             _ => entry
                 .after
