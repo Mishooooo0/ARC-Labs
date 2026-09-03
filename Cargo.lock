@@ -274,6 +274,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "arc-labs-sync"
+version = "0.0.1"
+dependencies = [
+ "arc-labs-core",
+ "arc-labs-ledger",
+ "blake3",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tracing",
+ "walkdir",
+]
+
+[[package]]
 name = "arc-labs-weave"
 version = "0.0.1"
 dependencies = [
