@@ -16,7 +16,7 @@
   import { transport } from "./lib/transport";
   import type {
     Backlink, GraphData, IndexStats, NoteRef, NoteView as Note, OutgoingLink,
-    ApiVersion, CanvasRunnability, CanvasView, Config, LinkSuggestion, Proposal, RunStatus, SearchHit, Status,
+    ApiVersion, CanvasRunnability, CanvasView, Config, CreateKind, LinkSuggestion, Proposal, RunStatus, SearchHit, Status, Template,
     TagCount, TimelineEntry, TreeView, UnresolvedLink, VaultEvent, WeaveStatus,
   } from "./lib/types";
   import { TransportError } from "./lib/types";
@@ -33,6 +33,7 @@
   import Home from "./components/Home.svelte";
   import Inbox from "./components/Inbox.svelte";
   import Settings from "./components/Settings.svelte";
+  import Create from "./components/Create.svelte";
   import NoteViewer from "./components/NoteView.svelte";
   import Proposals from "./components/Proposals.svelte";
   import RunPanel from "./components/RunPanel.svelte";
@@ -661,30 +662,99 @@
 
   // ── Note lifecycle ─────────────────────────────────────────────────────
 
+  // ── Creation ────────────────────────────────────────────────────────────
+  let createOpen = $state(false);
+  let createFolder = $state("");
+  let createKind = $state<CreateKind>("note");
+  let templates = $state<Template[]>([]);
+  let drafting = $state(false);
+  let draftError = $state<string | null>(null);
+  let draft = $state<string | null>(null);
+
   /**
-   * Ask for a name, pre-filled with a free one.
+   * Open the creation window, aimed at `folder` (or the selection's folder)
+   * and at `kind`.
    *
    * `folder` comes from wherever the user was: a new note made while reading
    * `Daily/2026-09-03.md` belongs in `Daily/`, not at the vault root. Guessing
    * that correctly is the difference between a feature and a chore.
    */
-  async function newNote(folder?: string) {
-    const dir = folder ?? (selected?.includes("/") ? selected.slice(0, selected.lastIndexOf("/")) : "");
-    const base = dir ? `${dir}/Untitled` : "Untitled";
-    let suggestion = `${base}.md`;
+  async function newThing(folder?: string, kind: CreateKind = "note") {
+    createFolder =
+      folder ??
+      (selected?.includes("/") ? selected.slice(0, selected.lastIndexOf("/")) : "");
+    createKind = kind;
+    draft = null;
+    draftError = null;
+    createOpen = true;
     try {
-      suggestion = await transport.uniquePath(base);
+      templates = await transport.templates();
     } catch {
-      // No index or no vault yet — the create call will report the real problem.
+      // No index or no templates folder. The picker simply has nothing to
+      // offer, which is the normal state of a vault that has never used one.
+      templates = [];
     }
-    askKind = "create";
-    askTitle = "New note";
-    askDetail = undefined;
-    askValue = suggestion;
-    askConfirm = "Create";
-    askDanger = false;
-    askTarget = null;
-    askOpen = true;
+  }
+
+  async function create(kind: CreateKind, name: string, template: string | null) {
+    createOpen = false;
+    const dir = createFolder ? `${createFolder}/` : "";
+    const stem = name.replace(/\.(md|canvas)$/i, "");
+
+    try {
+      if (kind === "folder") {
+        await transport.createFolder(`${dir}${stem}`);
+        await refreshTree();
+        return;
+      }
+      if (kind === "canvas") {
+        const path = `${dir}${stem}.canvas`;
+        await transport.createCanvas(path);
+        await refreshTree();
+        await openNote(path);
+        return;
+      }
+
+      // A note. Collisions become "Untitled 2" rather than an error to think
+      // about — the same rule the old prompt used.
+      let path = `${dir}${stem}.md`;
+      try {
+        path = await transport.uniquePath(`${dir}${stem}`);
+      } catch {
+        /* no index yet; the create call reports anything real */
+      }
+      if (template) await transport.createFromTemplate(path, template);
+      else await transport.createNote(path, "");
+      await refreshTree();
+      await openNote(path);
+      editing = true;
+    } catch (e) {
+      error = message(e);
+    }
+  }
+
+  async function draftTemplate(description: string) {
+    drafting = true;
+    draftError = null;
+    try {
+      draft = await transport.draftTemplate(description);
+    } catch (e) {
+      // The model's own reason, not a generic failure: "no such model" and
+      // "not reachable" need different actions from whoever reads it.
+      draftError = message(e);
+    } finally {
+      drafting = false;
+    }
+  }
+
+  async function saveTemplate(name: string, body: string) {
+    try {
+      await transport.saveTemplate(name, body);
+      templates = await transport.templates();
+      await refreshTree();
+    } catch (e) {
+      draftError = message(e);
+    }
   }
 
   function renameNote(path?: string) {
@@ -808,7 +878,17 @@
   }
 
   let commands = $derived<Command[]>([
-    { id: "new", label: "New note", hint: "⌘N", run: () => void newNote() },
+    { id: "new", label: "New note", hint: "⌘N", run: () => void newThing() },
+    {
+      id: "new-folder",
+      label: "New folder",
+      run: () => void newThing(undefined, "folder"),
+    },
+    {
+      id: "new-canvas",
+      label: "New canvas",
+      run: () => void newThing(undefined, "canvas"),
+    },
     {
       id: "rename",
       label: selected ? `Rename ${selected.split("/").pop()}` : "Rename this note",
@@ -917,7 +997,7 @@
     }
     if (k === "n" && !e.shiftKey) {
       e.preventDefault();
-      void newNote();
+      void newThing();
       return;
     }
     if (k === "e" && !e.shiftKey) {
@@ -1042,7 +1122,7 @@
       <aside class="sidebar">
         <div class="sidehead">
           <span class="data label">notes</span>
-          <button class="new" onclick={() => void newNote()} title="New note · ⌘N">+</button>
+          <button class="new" onclick={() => void newThing()} title="New · ⌘N">+</button>
         </div>
         {#if tree && tree.entries.length}
           <FileTree {tree} {selected} onselect={openNote} />
@@ -1051,7 +1131,7 @@
             title="This vault is empty"
             description="Make the first note, or drop a markdown file into the folder."
             actionLabel="New note"
-            onaction={() => void newNote()}
+            onaction={() => void newThing()}
             hint={status.vault.path ?? ""}
           />
         {/if}
@@ -1253,6 +1333,20 @@
       {/if}
     </div>
   </div>
+
+  <Create
+    bind:open={createOpen}
+    folder={createFolder}
+    initialKind={createKind}
+    {templates}
+    {drafting}
+    {draftError}
+    bind:draft
+    oncreate={(k, n, t) => void create(k, n, t)}
+    ondraft={(d) => void draftTemplate(d)}
+    onsavetemplate={(n, b) => void saveTemplate(n, b)}
+    oncancel={() => (createOpen = false)}
+  />
 
   {#if settingsOpen && config}
     <Settings

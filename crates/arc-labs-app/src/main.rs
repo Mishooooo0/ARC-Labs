@@ -227,6 +227,49 @@ fn index_stats(api: tauri::State<'_, Arc<Api>>) -> CmdResult<Q::IndexStats> {
 /// it shows is the list an external agent gets, and the two cannot drift apart.
 /// The browser shell reaches the same handler over `POST /api/v1/mcp`.
 #[tauri::command]
+fn create_folder(api: tauri::State<'_, Arc<Api>>, path: VaultPath) -> CmdResult<()> {
+    api.create_folder(&path)
+}
+
+#[tauri::command]
+fn create_canvas(api: tauri::State<'_, Arc<Api>>, path: VaultPath) -> CmdResult<()> {
+    api.create_canvas(&path)
+}
+
+#[tauri::command]
+fn templates(api: tauri::State<'_, Arc<Api>>) -> CmdResult<Vec<arc_labs_api::Template>> {
+    api.templates()
+}
+
+#[tauri::command]
+fn create_from_template(
+    api: tauri::State<'_, Arc<Api>>,
+    path: VaultPath,
+    template: VaultPath,
+) -> CmdResult<arc_labs_api::NoteView> {
+    api.create_note_from_template(&path, &template)
+}
+
+#[tauri::command]
+fn save_template(
+    api: tauri::State<'_, Arc<Api>>,
+    name: String,
+    body: String,
+) -> CmdResult<arc_labs_api::Template> {
+    api.save_template(&name, &body)
+}
+
+/// Drafting waits on a model, so it runs off the command thread — otherwise the
+/// window freezes for the length of a generation.
+#[tauri::command]
+async fn draft_template(api: tauri::State<'_, Arc<Api>>, description: String) -> CmdResult<String> {
+    let api = Arc::clone(&api);
+    tokio::task::spawn_blocking(move || api.draft_template(&description))
+        .await
+        .map_err(|e| arc_labs_api::ApiError::new(arc_labs_api::ErrorCode::Io, e.to_string()))?
+}
+
+#[tauri::command]
 fn mcp_request(api: tauri::State<'_, Arc<Api>>, body: String) -> String {
     let api = Arc::clone(&api);
     arc_labs_mcp::handle(&api, &body).unwrap_or_default()
@@ -472,6 +515,12 @@ fn main() {
             mcp_request,
             set_config,
             create_note,
+            create_folder,
+            create_canvas,
+            templates,
+            create_from_template,
+            save_template,
+            draft_template,
             rename_note,
             delete_note,
             unique_path,

@@ -18,7 +18,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+// `Default` is written out below rather than derived: `templates_folder` has a
+// non-empty default, and a derived `Default` would give it "" while serde gave
+// it "Templates" — two different notions of default for one field is exactly
+// the kind of quiet divergence that shows up as an empty template list.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     /// Last opened vault. Absent on a fresh install, which is what sends the
@@ -38,6 +42,20 @@ pub struct Config {
 
     #[serde(default)]
     pub weave: WeaveConfig,
+
+    /// Folder holding note templates, relative to the vault root.
+    ///
+    /// A setting rather than a constant because plenty of vaults already keep
+    /// `_templates/` or `meta/templates/`, and telling someone to move their
+    /// files to suit the app is the wrong way round. The default matches
+    /// Obsidian's own convention, so templates work in both without moving
+    /// anything.
+    #[serde(default = "default_templates_folder")]
+    pub templates_folder: String,
+}
+
+fn default_templates_folder() -> String {
+    "Templates".into()
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -114,6 +132,19 @@ pub struct WeaveConfig {
     pub cpu_fraction: f64,
     /// Seconds between passes when there is nothing left to do.
     pub interval_secs: u64,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            vault: None,
+            actor_id: None,
+            ui: UiConfig::default(),
+            model: ModelConfig::default(),
+            weave: WeaveConfig::default(),
+            templates_folder: default_templates_folder(),
+        }
+    }
 }
 
 impl Default for WeaveConfig {

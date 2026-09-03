@@ -181,6 +181,43 @@ impl Vault {
         Ok(bytes.len())
     }
 
+    /// Create a folder.
+    ///
+    /// Refuses an existing path for the same reason every other create does,
+    /// with one wrinkle worth stating: an existing *directory* is refused too.
+    /// Silently succeeding on a folder that is already there sounds harmless
+    /// until the caller treats it as proof the folder is theirs and writes into
+    /// someone else's.
+    ///
+    /// Not ledgered, and that is deliberate — see `Api::create_folder`.
+    pub fn create_folder(&self, path: &VaultPath) -> Result<()> {
+        // Resolve as if creating a file inside it, so the same containment and
+        // symlink-escape checks run. A folder is a write to the vault and gets
+        // the same scrutiny as a note.
+        let abs = self.root.resolve_for_create(path)?;
+        if abs.exists() {
+            return Err(Error::AlreadyExists(path.to_string()));
+        }
+        std::fs::create_dir_all(&abs).map_err(|e| Error::io(&abs, e))
+    }
+
+    /// Create a file from bytes the caller has already formatted.
+    ///
+    /// Deliberately format-agnostic. A canvas is created by handing this the
+    /// output of `arc-labs-canvas`'s own emitter — core does not know what a
+    /// canvas looks like and must not learn, because the fan-out runs the other
+    /// way and the byte-exact format has exactly one owner.
+    ///
+    /// Refuses to overwrite, like every other create here.
+    pub fn create_file(&self, path: &VaultPath, bytes: &[u8]) -> Result<usize> {
+        let abs = self.root.resolve_for_create(path)?;
+        if abs.exists() {
+            return Err(Error::AlreadyExists(path.to_string()));
+        }
+        atomic::replace(&abs, bytes)?;
+        Ok(bytes.len())
+    }
+
     /// Move a note to a new path.
     ///
     /// Refuses to overwrite the destination, for the same reason `create_note`

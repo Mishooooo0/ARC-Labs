@@ -15,8 +15,10 @@
 //! gate is that a real vault is byte-identical after an hour of browsing, and
 //! the way to guarantee that is for the capability not to exist yet.
 
+pub mod draft;
 pub mod error;
 pub mod runs;
+pub mod templates;
 pub mod types;
 pub mod weave;
 
@@ -27,6 +29,7 @@ use arc_labs_core::{Config, LineEnding, Vault, VaultPath};
 use arc_labs_index::{query, Index};
 
 pub use error::{ApiError, ApiResult, ErrorCode};
+pub use templates::Template;
 pub use types::*;
 
 /// What this deployment is allowed to do beyond reading an open vault.
@@ -441,6 +444,54 @@ impl Api {
         let view = self.read_note_for_edit(path)?;
         self.publish(EventKind::Created, Some(path), Some(view.hash.clone()));
         Ok(view)
+    }
+
+    /// Create a folder.
+    ///
+    /// **Not ledgered, on purpose.** The ledger is keyed per note and answers
+    /// "what happened to this note"; a directory has no content, no hash and no
+    /// history, so an entry for one would be a row that can never be diffed or
+    /// restored. It would also put noise into the Phase 6 audit, which compares
+    /// ledger entries against files git says changed — and git does not track
+    /// directories either.
+    pub fn create_folder(&self, path: &VaultPath) -> ApiResult<()> {
+        self.note_user_activity();
+        self.with_vault(|v| Ok(v.create_folder(path)?))?;
+        // Structural, so the tree needs to know even though the ledger does not.
+        self.publish(EventKind::Created, Some(path), None);
+        Ok(())
+    }
+
+    /// Create an empty canvas.
+    ///
+    /// The bytes come from `arc-labs-canvas`'s own emitter rather than a string
+    /// written here, so a board this app creates is byte-identical to one
+    /// Obsidian would have written — which is the same guarantee the Phase 4
+    /// oracle tests, arrived at through the same code path.
+    pub fn create_canvas(&self, path: &VaultPath) -> ApiResult<()> {
+        self.note_user_activity();
+        let bytes = arc_labs_canvas::Canvas::empty().serialize();
+        self.with_vault(|v| Ok(v.create_file(path, bytes.as_bytes())?))?;
+
+        if let Err(e) = self.ledger().and_then(|l| {
+            l.record_change(
+                path,
+                self.human(),
+                arc_labs_ledger::Op::Create,
+                "created a canvas",
+                None,
+                Some(&bytes),
+            )
+            .map_err(ledger_err)
+        }) {
+            tracing::warn!(error = %e, path = %path, "could not record the creation");
+        }
+
+        if let Err(e) = self.reindex_note(path) {
+            tracing::warn!(error = %e, path = %path, "could not index the new canvas");
+        }
+        self.publish(EventKind::Created, Some(path), None);
+        Ok(())
     }
 
     /// A free path near `desired`, so a name collision becomes "Untitled 2"

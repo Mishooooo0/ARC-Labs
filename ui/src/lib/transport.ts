@@ -18,7 +18,7 @@
 
 import type {
   Backlink, CanvasRunnability, CanvasView, DirListing, EntryDiff, GraphData, IndexStats,
-  ApiVersion, Config, Deleted, LinkSuggestion, NodeGeometry, VaultEvent, NoteRef, NoteView, OutgoingLink, PassReport, Proposal, RunStatus,
+  ApiVersion, Config, Deleted, LinkSuggestion, NodeGeometry, Template, VaultEvent, NoteRef, NoteView, OutgoingLink, PassReport, Proposal, RunStatus,
   SaveResult, SearchHit, Status, TagCount, TimelineEntry, TreeView, UnresolvedLink, VaultInfo,
   WeaveStatus,
 } from "./types";
@@ -142,6 +142,15 @@ export interface Transport {
    * second copy to fall out of date.
    */
   mcp(request: unknown): Promise<unknown>;
+
+  // ── Creation ──────────────────────────────────────────────────────────────
+  createFolder(path: string): Promise<void>;
+  createCanvas(path: string): Promise<void>;
+  createFromTemplate(path: string, template: string): Promise<NoteView>;
+  templates(): Promise<Template[]>;
+  saveTemplate(name: string, body: string): Promise<Template>;
+  /** Ask a model for a template. Returns the text; writes nothing. */
+  draftTemplate(description: string): Promise<string>;
 
   browse(path?: string): Promise<DirListing>;
   openVault(path: string): Promise<VaultInfo>;
@@ -488,6 +497,34 @@ class ServerTransport implements Transport {
     });
   }
 
+  createFolder(path: string) {
+    return this.#call<void>("folder/create", { method: "POST", body: JSON.stringify({ path }) });
+  }
+  createCanvas(path: string) {
+    return this.#call<void>("canvas/create", { method: "POST", body: JSON.stringify({ path }) });
+  }
+  createFromTemplate(path: string, template: string) {
+    return this.#call<NoteView>("note/create", {
+      method: "POST",
+      body: JSON.stringify({ path, template }),
+    });
+  }
+  templates() {
+    return this.#call<Template[]>("templates");
+  }
+  saveTemplate(name: string, body: string) {
+    return this.#call<Template>("template/save", {
+      method: "POST",
+      body: JSON.stringify({ name, body }),
+    });
+  }
+  draftTemplate(description: string) {
+    return this.#call<string>("template/draft", {
+      method: "POST",
+      body: JSON.stringify({ description }),
+    });
+  }
+
   config() {
     return this.#call<Config>("config");
   }
@@ -690,6 +727,25 @@ class DesktopTransport implements Transport {
       body: JSON.stringify(request),
     });
     return raw ? (JSON.parse(raw) as unknown) : null;
+  }
+
+  createFolder(path: string) {
+    return this.#invoke<void>("create_folder", { path });
+  }
+  createCanvas(path: string) {
+    return this.#invoke<void>("create_canvas", { path });
+  }
+  createFromTemplate(path: string, template: string) {
+    return this.#invoke<NoteView>("create_from_template", { path, template });
+  }
+  templates() {
+    return this.#invoke<Template[]>("templates");
+  }
+  saveTemplate(name: string, body: string) {
+    return this.#invoke<Template>("save_template", { name, body });
+  }
+  draftTemplate(description: string) {
+    return this.#invoke<string>("draft_template", { description });
   }
 
   config() {

@@ -66,6 +66,18 @@ pub struct GenerateRequest {
     /// Cap on generated tokens, so a runaway model cannot occupy the machine
     /// indefinitely.
     pub max_tokens: usize,
+    /// Whether the model may reason before answering.
+    ///
+    /// `true` keeps whatever the model does by default. `false` asks Ollama to
+    /// skip reasoning entirely, which matters because a reasoning model can
+    /// spend its **entire** budget thinking and return an empty answer —
+    /// measured at 62 seconds and no output for a one-paragraph request on this
+    /// hardware.
+    ///
+    /// Raising `max_tokens` does not reliably fix it: the model simply thinks
+    /// for longer. For a task with no reasoning to do — writing a skeleton from
+    /// a one-line description — the honest request is "do not think".
+    pub think: bool,
 }
 
 impl GenerateRequest {
@@ -83,6 +95,7 @@ impl GenerateRequest {
             temperature: 0.0,
             context_tokens: Self::DEFAULT_CONTEXT,
             max_tokens: Self::DEFAULT_MAX_TOKENS,
+            think: true,
         }
     }
 }
@@ -259,7 +272,7 @@ impl Llm for Ollama {
         let (host, port) = parse_endpoint(&self.endpoint)?;
         let started = Instant::now();
 
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "model": req.model,
             "prompt": req.prompt,
             "stream": true,
@@ -271,8 +284,14 @@ impl Llm for Ollama {
                 "num_ctx": req.context_tokens,
                 "num_predict": req.max_tokens,
             },
-        })
-        .to_string();
+        });
+        // Only sent when switching reasoning OFF. A model with no thinking mode
+        // has no opinion about the key, and omitting it by default keeps every
+        // existing caller behaving exactly as it did.
+        if !req.think {
+            body["think"] = serde_json::Value::Bool(false);
+        }
+        let body = body.to_string();
 
         let mut stream = self.connect()?;
         let head = format!(

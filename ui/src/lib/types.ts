@@ -495,3 +495,14 @@ export interface McpTool {
   name: string;
   description: string;
 }
+
+/** A template file, as the creation window lists it. */
+export interface Template {
+  /** Vault path — a template is an ordinary note and can be opened as one. */
+  path: string;
+  /** The file stem, which is what the picker shows. */
+  name: string;
+}
+
+/** What the creation window can make. */
+export type CreateKind = "note" | "canvas" | "folder";

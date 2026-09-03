@@ -152,9 +152,33 @@ pub fn router(api: Arc<Api>, cfg: &ServerConfig) -> Router {
     });
 
     let index = cfg.ui_dir.join("index.html");
+
+    // Vite content-hashes every asset filename, so an asset URL never changes
+    // meaning and can be cached for a year.
+    let assets = Router::new()
+        .fallback_service(ServeDir::new(cfg.ui_dir.join("assets")))
+        .layer(SetResponseHeaderLayer::overriding(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("public, max-age=31536000, immutable"),
+        ));
+
     // SPA fallback: unknown paths serve index.html so client-side routing works,
     // while /api/* is matched first and never falls through to it.
-    let static_files = ServeDir::new(&cfg.ui_dir).fallback(ServeFile::new(index));
+    //
+    // `no-cache` on this half is load-bearing, and it is the opposite of the
+    // rule above. `index.html` has a fixed URL and its body names which hashed
+    // bundle to load, so with no cache directive a browser applies heuristic
+    // freshness and keeps serving the previous UI after the server is upgraded
+    // — which looks exactly like a feature that was never shipped rather than
+    // like a caching bug. Observed during this build: a rebuilt UI kept loading
+    // the old bundle until a hard refresh. `no-cache` means revalidate, not
+    // "do not store": the ETag above still makes that a 304 on the common path.
+    let static_files = Router::new()
+        .fallback_service(ServeDir::new(&cfg.ui_dir).fallback(ServeFile::new(index)))
+        .layer(SetResponseHeaderLayer::overriding(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("no-cache"),
+        ));
 
     let api_routes = Router::new()
         .route("/status", get(status))
@@ -163,6 +187,11 @@ pub fn router(api: Arc<Api>, cfg: &ServerConfig) -> Router {
         .route("/note/edit", get(note_for_edit))
         .route("/note/save", post(save_note))
         .route("/note/create", post(create_note))
+        .route("/folder/create", post(create_folder))
+        .route("/canvas/create", post(create_canvas))
+        .route("/templates", get(templates))
+        .route("/template/save", post(save_template))
+        .route("/template/draft", post(draft_template))
         .route("/note/rename", post(rename_note))
         .route("/note/delete", post(delete_note))
         .route("/note/unique-path", get(unique_path))
@@ -238,6 +267,7 @@ pub fn router(api: Arc<Api>, cfg: &ServerConfig) -> Router {
         // client that predates versioning must still find it at `/api`.
         .nest("/api/v1", handshake.clone())
         .nest("/api", handshake)
+        .nest("/assets", assets)
         .fallback_service(static_files)
         .layer(SetResponseHeaderLayer::overriding(
             header::CONTENT_SECURITY_POLICY,
@@ -341,6 +371,49 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
         return false;
     }
     a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+async fn create_folder(State(s): State<Arc<AppState>>, Json(b): Json<CreateBody>) -> WebResult<()> {
+    Ok(Json(s.api.create_folder(&b.path)?))
+}
+
+async fn create_canvas(State(s): State<Arc<AppState>>, Json(b): Json<CreateBody>) -> WebResult<()> {
+    Ok(Json(s.api.create_canvas(&b.path)?))
+}
+
+async fn templates(State(s): State<Arc<AppState>>) -> WebResult<Vec<arc_labs_api::Template>> {
+    Ok(Json(s.api.templates()?))
+}
+
+#[derive(Deserialize)]
+struct SaveTemplateBody {
+    name: String,
+    body: String,
+}
+
+async fn save_template(
+    State(s): State<Arc<AppState>>,
+    Json(b): Json<SaveTemplateBody>,
+) -> WebResult<arc_labs_api::Template> {
+    Ok(Json(s.api.save_template(&b.name, &b.body)?))
+}
+
+#[derive(Deserialize)]
+struct DraftBody {
+    description: String,
+}
+
+/// Drafting waits on a model, so it goes to a blocking thread rather than
+/// occupying an async worker for the length of a generation.
+async fn draft_template(
+    State(s): State<Arc<AppState>>,
+    Json(b): Json<DraftBody>,
+) -> WebResult<String> {
+    let api = s.api.clone();
+    let text = tokio::task::spawn_blocking(move || api.draft_template(&b.description))
+        .await
+        .map_err(|e| ApiError::new(ErrorCode::Io, e.to_string()))??;
+    Ok(Json(text))
 }
 
 async fn get_config(State(s): State<Arc<AppState>>) -> Json<arc_labs_api::Settings> {
@@ -468,6 +541,11 @@ struct CreateBody {
     path: VaultPath,
     #[serde(default)]
     text: String,
+    /// Present when the note starts from a template. The two are exclusive:
+    /// a template supplies the text, so sending both would be ambiguous about
+    /// which one wins.
+    #[serde(default)]
+    template: Option<VaultPath>,
 }
 
 /// Create a note. On a blocking thread with the other write paths.
@@ -476,9 +554,12 @@ async fn create_note(
     Json(body): Json<CreateBody>,
 ) -> WebResult<arc_labs_api::NoteView> {
     let api = s.api.clone();
-    let view = tokio::task::spawn_blocking(move || api.create_note(&body.path, &body.text))
-        .await
-        .map_err(|e| ApiError::new(ErrorCode::Io, e.to_string()))??;
+    let view = tokio::task::spawn_blocking(move || match &body.template {
+        Some(t) => api.create_note_from_template(&body.path, t),
+        None => api.create_note(&body.path, &body.text),
+    })
+    .await
+    .map_err(|e| ApiError::new(ErrorCode::Io, e.to_string()))??;
     Ok(Json(view))
 }
 
@@ -959,5 +1040,81 @@ mod tests {
                 assert_eq!(code, "400", "traversal {attack} was not rejected");
             }
         }
+    }
+
+    /// The upgrade path, as a test.
+    ///
+    /// A browser that keeps its cached `index.html` keeps loading the bundle
+    /// that copy names, so a server upgraded in place serves a UI nobody
+    /// shipped any more. It looks like a missing feature, not a caching bug,
+    /// which is what makes it worth a test rather than a comment.
+    #[tokio::test]
+    async fn the_shell_revalidates_and_the_hashed_assets_do_not() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("index.html"),
+            b"<!doctype html>
+",
+        )
+        .unwrap();
+        std::fs::create_dir(tmp.path().join("assets")).unwrap();
+        std::fs::write(
+            tmp.path().join("assets/index-abc123.js"),
+            b"//
+",
+        )
+        .unwrap();
+
+        let vault = tempfile::tempdir().unwrap();
+        let api = Arc::new(Api::new(
+            Config::default(),
+            None,
+            Capabilities::local_server(),
+        ));
+        api.open_vault(vault.path()).unwrap();
+
+        let mut c = cfg(IpAddr::V4(Ipv4Addr::LOCALHOST), None);
+        c.ui_dir = tmp.path().to_path_buf();
+        let app = router(api, &c);
+        let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await });
+
+        let headers = |path: &str| {
+            let url = format!("http://{addr}{path}");
+            async move {
+                let out = tokio::process::Command::new("curl")
+                    .args(["-s", "-D", "-", "-o", "/dev/null", &url])
+                    .output()
+                    .await
+                    .ok()?;
+                Some(String::from_utf8_lossy(&out.stdout).to_lowercase())
+            }
+        };
+
+        let Some(shell) = headers("/").await else {
+            return;
+        };
+        if shell.is_empty() {
+            eprintln!("skipping: curl unavailable");
+            return;
+        }
+        assert!(
+            shell.contains("cache-control: no-cache"),
+            "index.html must revalidate, got: {shell}"
+        );
+
+        let asset = headers("/assets/index-abc123.js").await.unwrap();
+        assert!(
+            asset.contains("immutable"),
+            "a content-hashed asset should be cacheable for a year, got: {asset}"
+        );
+        // The SPA fallback is the same document as `/`, so it inherits the
+        // same rule — a deep link after an upgrade must not be the one route
+        // that hands back yesterday's app.
+        let deep = headers("/some/client/route").await.unwrap();
+        assert!(deep.contains("cache-control: no-cache"), "got: {deep}");
     }
 }
