@@ -413,6 +413,12 @@ fn cmd_serve(
         }
     }
 
+    // Scheduled sync. Started whatever the role: the daemon's first act is to
+    // ask whether anything is scheduled, and for a hub, a standalone vault or a
+    // manual cadence the answer is no and it sleeps. Gating it on config here
+    // would mean a schedule turned on in Settings did nothing until restart.
+    std::mem::forget(arc_labs_api::sync::spawn(Arc::clone(&api)));
+
     if !cfg.ui_dir.join("index.html").exists() {
         tracing::warn!(
             dir = %cfg.ui_dir.display(),

@@ -500,6 +500,13 @@ fn main() {
         });
     }
 
+    // Scheduled sync. Started unconditionally: the daemon's first act is to ask
+    // whether anything is scheduled, and for a standalone vault or a manual
+    // cadence the answer is no and it goes back to sleep. Gating it on config
+    // here instead would mean a schedule turned on in Settings did nothing
+    // until the app was restarted.
+    std::mem::forget(arc_labs_api::sync::spawn(Arc::clone(&api)));
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(Arc::clone(&api))

@@ -22,7 +22,7 @@
    * shows cannot drift from what agents actually get.
    */
   import { untrack } from "svelte";
-  import type { ApiVersion, Config, McpTool } from "../lib/types";
+  import type { ApiVersion, Config, McpTool, SyncReport } from "../lib/types";
   import { transport } from "../lib/transport";
 
   interface Props {
@@ -85,6 +85,46 @@
     ["ask-each-run", "Ask each run", "Confirm before anything leaves."],
   ];
 
+  // ── Sync ──────────────────────────────────────────────────────────────────
+  let syncing = $state(false);
+  let status = $state<SyncReport | null>(null);
+  let syncError = $state<string | null>(null);
+
+  /**
+   * The one thing only this side knows, stamped on the way out.
+   *
+   * `std` cannot tell a Rust process its local UTC offset and this workspace
+   * has no date-time dependency to ask — but a browser or a webview knows it
+   * exactly. So the UI fills it in as settings are saved, and "3am" means 3am
+   * where the person setting it is standing.
+   *
+   * Done here rather than in an effect on purpose: an effect wrote to `draft`
+   * the moment the panel opened, which made the form dirty and armed Save
+   * before anyone had touched anything.
+   *
+   * `getTimezoneOffset` counts minutes *behind* UTC, the opposite sign from
+   * every other way of writing an offset. Negated exactly once, here.
+   */
+  function save() {
+    const out = $state.snapshot(draft);
+    out.sync.utcOffsetMinutes = -new Date().getTimezoneOffset();
+    onsave(out);
+  }
+
+  async function runSync() {
+    syncing = true;
+    syncError = null;
+    try {
+      status = await transport.syncNow();
+    } catch (e) {
+      // The hub's own words. "not a vault server" and "could not reach" need
+      // different actions, and a generic failure message hides which it was.
+      syncError = e instanceof Error ? e.message : String(e);
+    } finally {
+      syncing = false;
+    }
+  }
+
   const CATEGORIES: Array<[Category, string]> = [
     ["appearance", "Appearance"],
     ["identity", "Identity"],
@@ -121,15 +161,9 @@
         <button
           class="cat"
           class:on={category === id}
-          class:dim={id === "sync"}
           onclick={() => (category = id)}
         >
           {label}
-          {#if id === "sync"}
-            <!-- Named and marked rather than hidden: it is coming, and a
-                 category that silently does not exist is its own confusion. -->
-            <span class="data soon">soon</span>
-          {/if}
         </button>
       {/each}
 
@@ -359,21 +393,131 @@
             </p>
           </div>
         {:else if category === "sync"}
-          <p class="hint standalone">
-            Not built yet. Scheduled sync to an always-on node — daily, weekly or monthly
-            at an hour you choose — is the next piece of work.
-          </p>
-          <p class="hint standalone">
-            To be clear about today: a vault on this machine and a vault on another are
-            unrelated directories with nothing between them. What exists now keeps two
-            <em>surfaces</em> in step — a desktop window and a browser sharing one engine —
-            and never crossed machines.
-          </p>
+          <fieldset class="row">
+            <legend class="label">This vault</legend>
+            {#each [["standalone", "On disk only"], ["client", "Connected to a vault server"], ["hub", "Is the vault server"]] as [id, label] (id)}
+              <label class="choice">
+                <input type="radio" bind:group={draft.sync.role} value={id} />
+                <span>{label}</span>
+              </label>
+            {/each}
+            <p class="hint">
+              On disk only is the default and changes nothing about how the notebook
+              works. A vault server is an always-on ARC-LABS that your machines sync to.
+            </p>
+          </fieldset>
+
+          {#if draft.sync.role === "client"}
+            <div class="row">
+              <span class="label">Vault server</span>
+              <input
+                class="text"
+                bind:value={draft.sync.hub}
+                placeholder="https://vault.example"
+                spellcheck="false"
+              />
+            </div>
+            <div class="row">
+              <span class="label">Token from</span>
+              <input class="text" bind:value={draft.sync.tokenEnv} spellcheck="false" />
+              <p class="hint">
+                The <em>name</em> of an environment variable, not the token itself. A
+                secret written into a config file is a secret in every backup and
+                screenshot of it.
+              </p>
+            </div>
+
+            <fieldset class="row">
+              <legend class="label">Sync automatically</legend>
+              {#each [["manual", "Only when I ask"], ["daily", "Daily"], ["weekly", "Weekly, on Monday"], ["monthly", "Monthly, on the 1st"]] as [id, label] (id)}
+                <label class="choice">
+                  <input type="radio" bind:group={draft.sync.cadence} value={id} />
+                  <span>{label}</span>
+                </label>
+              {/each}
+            </fieldset>
+
+            {#if draft.sync.cadence !== "manual"}
+              <div class="row">
+                <span class="label">At</span>
+                <div class="days">
+                  <input
+                    class="text num"
+                    type="number"
+                    min="0"
+                    max="23"
+                    bind:value={draft.sync.hour}
+                  />
+                  <span class="data unit">:00, your time</span>
+                </div>
+                <p class="hint">
+                  A window missed while this machine was off runs shortly after it wakes,
+                  once — not once for every window that passed.
+                </p>
+              </div>
+            {/if}
+
+            {#if syncing || status}
+              <div class="row">
+                <span class="label">Last run</span>
+                {#if syncing}
+                  <p class="hint standalone">syncing…</p>
+                {:else if syncError}
+                  <p class="err">{syncError}</p>
+                {:else if status}
+                  <p class="hint standalone">
+                    {status.pushed} sent · {status.pulled} received ·
+                    {status.deletedThere + status.deletedHere} deleted ·
+                    {status.historyMerged} history entries
+                  </p>
+                  {#if status.conflicts.length}
+                    <p class="hint">
+                      Left alone, for you to settle — neither copy was touched:
+                    </p>
+                    <ul class="conflicts">
+                      {#each status.conflicts as c (c.path)}
+                        <li>
+                          <span class="data">{c.path}</span>
+                          <span class="kind">{c.kind.replace(/-/g, " ")}</span>
+                        </li>
+                      {/each}
+                    </ul>
+                  {/if}
+                  {#if status.problems.length}
+                    <ul class="conflicts">
+                      {#each status.problems as p (p)}
+                        <li class="bad">{p}</li>
+                      {/each}
+                    </ul>
+                  {/if}
+                {/if}
+              </div>
+            {/if}
+
+            <div class="row">
+              <button class="save" onclick={runSync} disabled={syncing || dirty}>
+                {syncing ? "syncing…" : "Sync now"}
+              </button>
+              {#if dirty}
+                <p class="hint">Save these settings first.</p>
+              {/if}
+            </div>
+          {:else if draft.sync.role === "hub"}
+            <p class="hint standalone">
+              This instance is the vault server. Other machines sync to it; it does not
+              sync anywhere itself.
+            </p>
+            <p class="hint standalone">
+              Point them at this address and give them its token. Pin the token with
+              <code>ARC_LABS_TOKEN</code> so it survives a restart — a generated one
+              changes every time and every device has to be re-pointed.
+            </p>
+          {/if}
         {/if}
       </div>
 
       <footer>
-        <button class="save" onclick={() => onsave($state.snapshot(draft))} disabled={!dirty || saving}>
+        <button class="save" onclick={save} disabled={!dirty || saving}>
           {saving ? "saving…" : dirty ? "Save" : "Saved"}
         </button>
         <button
@@ -449,17 +593,6 @@
   .cat.on {
     background: var(--arc-bg-3);
     color: var(--arc-fg);
-  }
-  .cat.dim {
-    opacity: 0.62;
-  }
-  .soon {
-    margin-left: auto;
-    font-size: var(--arc-text-xs);
-    color: var(--arc-warn);
-    background: var(--arc-human-wash);
-    padding: 1px var(--arc-space-2);
-    border-radius: var(--arc-radius-pill);
   }
   .railfoot {
     margin-top: auto;
@@ -659,6 +792,35 @@
     font-size: var(--arc-text-xs);
     line-height: var(--arc-leading);
   }
+  .conflicts {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--arc-space-1);
+    font-size: var(--arc-text-xs);
+  }
+  .conflicts li {
+    display: flex;
+    gap: var(--arc-space-3);
+    color: var(--arc-fg-dim);
+  }
+  .conflicts .bad {
+    color: var(--arc-danger);
+  }
+  .kind {
+    color: var(--arc-fg-faint);
+  }
+  .choice {
+    display: flex;
+    align-items: center;
+    gap: var(--arc-space-2);
+    font-size: var(--arc-text-sm);
+    color: var(--arc-fg-dim);
+    cursor: pointer;
+  }
+
   .days {
     display: flex;
     align-items: center;

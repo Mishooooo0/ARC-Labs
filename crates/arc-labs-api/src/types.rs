@@ -4,7 +4,7 @@
 //! whether it arrives via Tauri's IPC or an HTTP body. Naming it once here keeps
 //! every shell from having to remember.
 
-use arc_labs_core::{Config, Density, ModelAccess, Tree, VaultPath, WikiLink};
+use arc_labs_core::{Cadence, Config, Density, ModelAccess, Role, Tree, VaultPath, WikiLink};
 use serde::{Deserialize, Serialize};
 
 /// The vault indicator in the top bar. Load-bearing from Phase 0 onward, so it
@@ -563,6 +563,7 @@ pub struct Settings {
     pub model: ModelSettings,
     pub weave: WeaveSettings,
     pub trash: TrashSettings,
+    pub sync: SyncSettings,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -598,6 +599,24 @@ pub struct TrashSettings {
     pub retention_days: u32,
 }
 
+/// The settable half of `[sync]`.
+///
+/// `role` is here because connecting a vault to a server is a setting someone
+/// makes in Settings; the token is not, and never will be — only the **name**
+/// of the variable holding it crosses this wire.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncSettings {
+    pub role: String,
+    pub hub: String,
+    pub token_env: String,
+    pub cadence: String,
+    pub hour: u32,
+    pub minute: u32,
+    /// Filled in by the UI, which knows the timezone this machine is in.
+    pub utc_offset_minutes: i32,
+}
+
 impl From<&Config> for Settings {
     fn from(c: &Config) -> Self {
         Settings {
@@ -629,6 +648,24 @@ impl From<&Config> for Settings {
             },
             trash: TrashSettings {
                 retention_days: c.trash.retention_days,
+            },
+            sync: SyncSettings {
+                role: match c.sync.role {
+                    Role::Standalone => "standalone".into(),
+                    Role::Client => "client".into(),
+                    Role::Hub => "hub".into(),
+                },
+                hub: c.sync.hub.clone(),
+                token_env: c.sync.token_env.clone(),
+                cadence: match c.sync.cadence {
+                    Cadence::Manual => "manual".into(),
+                    Cadence::Daily => "daily".into(),
+                    Cadence::Weekly => "weekly".into(),
+                    Cadence::Monthly => "monthly".into(),
+                },
+                hour: c.sync.hour,
+                minute: c.sync.minute,
+                utc_offset_minutes: c.sync.utc_offset_minutes,
             },
         }
     }
@@ -671,6 +708,29 @@ impl Settings {
         // overflow the cutoff arithmetic and turn "keep for a while" into
         // "purge everything".
         current.trash.retention_days = self.trash.retention_days.min(3650);
+
+        // An unrecognised value keeps what is already set, like every other
+        // enum here: a client with a bug should not be able to disconnect a
+        // vault from its server by sending a word nobody recognises.
+        current.sync.role = match self.sync.role.as_str() {
+            "standalone" => Role::Standalone,
+            "client" => Role::Client,
+            "hub" => Role::Hub,
+            _ => current.sync.role,
+        };
+        current.sync.hub = self.sync.hub.trim().trim_end_matches('/').to_string();
+        current.sync.token_env = self.sync.token_env.trim().to_string();
+        current.sync.cadence = match self.sync.cadence.as_str() {
+            "manual" => Cadence::Manual,
+            "daily" => Cadence::Daily,
+            "weekly" => Cadence::Weekly,
+            "monthly" => Cadence::Monthly,
+            _ => current.sync.cadence,
+        };
+        current.sync.hour = self.sync.hour.min(23);
+        current.sync.minute = self.sync.minute.min(59);
+        // Real offsets run from -12:00 to +14:00.
+        current.sync.utc_offset_minutes = self.sync.utc_offset_minutes.clamp(-720, 840);
         current
     }
 }

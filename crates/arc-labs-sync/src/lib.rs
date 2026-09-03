@@ -40,6 +40,7 @@ pub mod ledger;
 pub mod manifest;
 pub mod pass;
 pub mod plan;
+pub mod schedule;
 
 pub use manifest::{FileState, Manifest};
 pub use plan::{plan, Action, Conflict};

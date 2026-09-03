@@ -35,7 +35,10 @@ use std::path::{Path, PathBuf};
 
 use arc_labs_core::VaultPath;
 
-pub use entry::{format_rfc3339, now_rfc3339, Actor, ActorKind, Entry, Op};
+pub use entry::{
+    civil_of, days_from_civil, format_rfc3339, now_rfc3339, parse_rfc3339, unix_secs_from, Actor,
+    ActorKind, Entry, Op,
+};
 pub use objects::{hash_of, ObjectStore};
 
 #[derive(Debug, thiserror::Error)]

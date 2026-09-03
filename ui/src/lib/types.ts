@@ -497,6 +497,19 @@ export interface Config {
      */
     retentionDays: number;
   };
+  sync: {
+    role: "standalone" | "client" | "hub";
+    hub: string;
+    /** The **name** of the environment variable holding the token. Never the
+     *  token: a secret in a config file is a secret in a backup. */
+    tokenEnv: string;
+    cadence: "manual" | "daily" | "weekly" | "monthly";
+    hour: number;
+    minute: number;
+    /** Filled in by the UI, which is the only part of this that knows what
+     *  timezone the machine is in. */
+    utcOffsetMinutes: number;
+  };
 }
 
 /** Where this machine stands with its vault server. Never carries the token. */

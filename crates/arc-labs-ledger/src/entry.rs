@@ -199,9 +199,130 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
+/// Howard Hinnant's `days_from_civil`: the inverse of the above.
+///
+/// The scheduler needs to go the other way — "the 3am after this one" is a
+/// calendar date turned back into a timestamp — and there was no inverse here
+/// because until now nothing needed one. Same 400-year cycle, same arithmetic
+/// read backwards, and still no date-time dependency for what is thirty lines.
+pub fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = if m > 2 { m - 3 } else { m + 9 } as i64;
+    let doy = (153 * mp + 2) / 5 + d as i64 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// A calendar date and time back to seconds since the epoch.
+pub fn unix_secs_from(y: i64, mo: u32, d: u32, h: u32, mi: u32, s: u32) -> i64 {
+    days_from_civil(y, mo, d) * 86_400 + h as i64 * 3600 + mi as i64 * 60 + s as i64
+}
+
+/// Seconds since the epoch, from an RFC 3339 UTC timestamp of the shape
+/// [`format_rfc3339`] writes.
+///
+/// Deliberately narrow: it reads exactly `YYYY-MM-DDTHH:MM:SSZ` and returns
+/// `None` for anything else. Every timestamp it is given was written by
+/// `format_rfc3339`, and a lenient parser here would be a place for a
+/// half-understood value to become a confident wrong answer about when the last
+/// sync happened.
+pub fn parse_rfc3339(s: &str) -> Option<i64> {
+    let s = s.trim();
+    let bytes = s.as_bytes();
+    if bytes.len() != 20 || bytes[4] != b'-' || bytes[7] != b'-' || bytes[10] != b'T' {
+        return None;
+    }
+    if bytes[13] != b':' || bytes[16] != b':' || bytes[19] != b'Z' {
+        return None;
+    }
+    let n = |a: usize, b: usize| s.get(a..b)?.parse::<i64>().ok();
+    Some(unix_secs_from(
+        n(0, 4)?,
+        n(5, 7)? as u32,
+        n(8, 10)? as u32,
+        n(11, 13)? as u32,
+        n(14, 16)? as u32,
+        n(17, 19)? as u32,
+    ))
+}
+
+/// The calendar date of a timestamp, and its weekday.
+///
+/// Weekday is derived from the day number rather than the date: 1970-01-01 was
+/// a Thursday, so `(days + 4).rem_euclid(7)` is 0 for Sunday.
+pub fn civil_of(unix_secs: i64) -> (i64, u32, u32, u32) {
+    let days = unix_secs.div_euclid(86_400);
+    let (y, m, d) = civil_from_days(days);
+    (y, m, d, (days + 4).rem_euclid(7) as u32)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The two directions must agree, including on the days that break
+    /// hand-rolled calendars: leap days, and the end of a century that is not a
+    /// leap year.
+    #[test]
+    fn the_calendar_round_trips_both_ways() {
+        for (y, m, d) in [
+            (1970, 1, 1),
+            (2000, 2, 29),
+            (1900, 3, 1),
+            (2024, 2, 29),
+            (2026, 9, 3),
+            (2100, 3, 1),
+            (2400, 12, 31),
+        ] {
+            let days = days_from_civil(y, m, d);
+            let secs = days * 86_400;
+            assert_eq!(
+                format_rfc3339(secs),
+                format!("{y:04}-{m:02}-{d:02}T00:00:00Z"),
+                "{y}-{m}-{d} did not survive the round trip"
+            );
+            assert_eq!(parse_rfc3339(&format_rfc3339(secs)), Some(secs));
+        }
+    }
+
+    #[test]
+    fn the_epoch_is_where_it_should_be() {
+        assert_eq!(days_from_civil(1970, 1, 1), 0);
+        assert_eq!(parse_rfc3339("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(unix_secs_from(1970, 1, 1, 1, 2, 3), 3723);
+    }
+
+    /// 1970-01-01 was a Thursday. If this is off by one, "every Monday" fires
+    /// on the wrong day for ever.
+    #[test]
+    fn weekdays_are_not_off_by_one() {
+        let (_, _, _, thursday) = civil_of(0);
+        assert_eq!(thursday, 4, "1970-01-01 was a Thursday");
+        // 2026-09-03 is a Thursday too.
+        let secs = unix_secs_from(2026, 9, 3, 0, 0, 0);
+        assert_eq!(civil_of(secs), (2026, 9, 3, 4));
+        // And the day after is a Friday.
+        assert_eq!(civil_of(secs + 86_400).3, 5);
+    }
+
+    /// A lenient parser is a place for a half-understood value to become a
+    /// confident wrong answer about when the last sync was.
+    #[test]
+    fn a_timestamp_of_the_wrong_shape_is_refused() {
+        for bad in [
+            "",
+            "2026-09-03",
+            "2026-09-03T10:00:00",
+            "2026-09-03T10:00:00+03:00",
+            "2026-09-03 10:00:00Z",
+            "not-a-timestamp-at-all",
+            "20260903T100000Z",
+        ] {
+            assert_eq!(parse_rfc3339(bad), None, "{bad:?} should not parse");
+        }
+    }
 
     #[test]
     fn entries_round_trip_through_json() {

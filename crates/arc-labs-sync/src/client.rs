@@ -109,7 +109,11 @@ impl Hub {
     }
 
     /// Send one file, quoting the generation it was planned against.
-    pub fn write(&self, path: &str, bytes: &[u8], generation: &str) -> Result<()> {
+    ///
+    /// Returns the generation the hub is at afterwards, which the caller must
+    /// carry into its next write — this write moved the hub, and quoting the
+    /// old value again would make the client collide with itself.
+    pub fn write(&self, path: &str, bytes: &[u8], generation: &str) -> Result<String> {
         self.agent
             .post(self.url("/file"))
             .query("path", path)
@@ -117,18 +121,23 @@ impl Hub {
             .header("Authorization", &format!("Bearer {}", self.token))
             .header("Content-Type", "application/octet-stream")
             .send(bytes)
-            .map_err(|e| self.wire(e))?;
-        Ok(())
+            .map_err(|e| self.wire(e))?
+            .body_mut()
+            .read_json()
+            .map_err(|e| SyncError::Wire(e.to_string()))
     }
 
-    /// Delete one file there, on behalf of a deletion made here.
-    pub fn delete(&self, path: &str, generation: &str) -> Result<()> {
+    /// Delete one file there, on behalf of a deletion made here. Returns the
+    /// generation afterwards, for the same reason `write` does.
+    pub fn delete(&self, path: &str, generation: &str) -> Result<String> {
         self.agent
             .post(self.url("/delete"))
             .header("Authorization", &format!("Bearer {}", self.token))
             .send_json(serde_json::json!({ "path": path, "generation": generation }))
-            .map_err(|e| self.wire(e))?;
-        Ok(())
+            .map_err(|e| self.wire(e))?
+            .body_mut()
+            .read_json()
+            .map_err(|e| SyncError::Wire(e.to_string()))
     }
 
     /// Which of these object hashes the hub does not have.

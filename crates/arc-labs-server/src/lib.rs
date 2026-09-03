@@ -1003,23 +1003,25 @@ async fn hub_write(
     State(s): State<Arc<AppState>>,
     Query(q): Query<GenQuery>,
     body: axum::body::Bytes,
-) -> WebResult<()> {
+) -> WebResult<String> {
     hub_only(&s)?;
     let api = Arc::clone(&s.api);
     let generation = q.generation.clone();
-    tokio::task::spawn_blocking(move || api.hub_write(&q.path, &body, generation.as_deref()))
-        .await
-        .map_err(|e| ApiError::new(ErrorCode::Io, e.to_string()))??;
-    Ok(Json(()))
+    Ok(Json(
+        tokio::task::spawn_blocking(move || api.hub_write(&q.path, &body, generation.as_deref()))
+            .await
+            .map_err(|e| ApiError::new(ErrorCode::Io, e.to_string()))??,
+    ))
 }
 
-async fn hub_delete(State(s): State<Arc<AppState>>, Json(q): Json<GenQuery>) -> WebResult<()> {
+async fn hub_delete(State(s): State<Arc<AppState>>, Json(q): Json<GenQuery>) -> WebResult<String> {
     hub_only(&s)?;
     let api = Arc::clone(&s.api);
-    tokio::task::spawn_blocking(move || api.hub_delete(&q.path, q.generation.as_deref()))
-        .await
-        .map_err(|e| ApiError::new(ErrorCode::Io, e.to_string()))??;
-    Ok(Json(()))
+    Ok(Json(
+        tokio::task::spawn_blocking(move || api.hub_delete(&q.path, q.generation.as_deref()))
+            .await
+            .map_err(|e| ApiError::new(ErrorCode::Io, e.to_string()))??,
+    ))
 }
 
 #[derive(Deserialize)]
@@ -1423,6 +1425,99 @@ mod tests {
         );
 
         std::env::remove_var("ARC_LABS_SYNC_TEST_TOKEN");
+    }
+
+    /// Several files in one pass.
+    ///
+    /// The generation check is optimistic concurrency, and a client that pushed
+    /// two files used to fail the second one against itself: the first write
+    /// moved the hub, so the value the plan was made against was already stale.
+    /// One push per pass hid it completely, which is exactly why this test
+    /// pushes three and deletes one.
+    #[tokio::test]
+    async fn a_pass_that_moves_several_files_does_not_collide_with_itself() {
+        let hub_dir = tempfile::tempdir().unwrap();
+        // Something for the client to delete on the hub's side.
+        std::fs::write(hub_dir.path().join("Doomed.md"), b"# Doomed\n").unwrap();
+
+        let hub_api = Arc::new(Api::new(
+            Config {
+                sync: arc_labs_core::SyncConfig {
+                    role: arc_labs_core::Role::Hub,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            None,
+            Capabilities::local_server(),
+        ));
+        hub_api.open_vault(hub_dir.path()).unwrap();
+
+        let app = router(
+            Arc::clone(&hub_api),
+            &cfg(IpAddr::V4(Ipv4Addr::LOCALHOST), None),
+        );
+        let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await });
+
+        let client_dir = tempfile::tempdir().unwrap();
+        for name in ["One.md", "Two.md", "Three.md"] {
+            std::fs::write(client_dir.path().join(name), format!("# {name}\n")).unwrap();
+        }
+
+        std::env::set_var("ARC_LABS_MULTI_TEST_TOKEN", "unused-on-loopback");
+        let client_api = Arc::new(Api::new(
+            Config {
+                sync: arc_labs_core::SyncConfig {
+                    role: arc_labs_core::Role::Client,
+                    hub: format!("http://{addr}"),
+                    token_env: "ARC_LABS_MULTI_TEST_TOKEN".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            None,
+            Capabilities::desktop(),
+        ));
+        client_api.open_vault(client_dir.path()).unwrap();
+
+        // First pass brings both sides level, so `Doomed.md` exists here too.
+        let api = Arc::clone(&client_api);
+        tokio::task::spawn_blocking(move || api.sync_now())
+            .await
+            .unwrap()
+            .unwrap();
+        std::fs::remove_file(client_dir.path().join("Doomed.md")).unwrap();
+        // Three more to push, so the second and third exercise the bug.
+        for name in ["Four.md", "Five.md", "Six.md"] {
+            std::fs::write(client_dir.path().join(name), format!("# {name}\n")).unwrap();
+        }
+
+        let api = Arc::clone(&client_api);
+        let report = tokio::task::spawn_blocking(move || api.sync_now())
+            .await
+            .unwrap()
+            .expect("a second pass");
+
+        assert!(
+            report.problems.is_empty(),
+            "a pass must not collide with its own writes: {:?}",
+            report.problems
+        );
+        assert_eq!(report.pushed, 3, "all three should land");
+        assert_eq!(report.deleted_there, 1);
+
+        for name in [
+            "One.md", "Two.md", "Three.md", "Four.md", "Five.md", "Six.md",
+        ] {
+            assert!(hub_dir.path().join(name).exists(), "{name} never arrived");
+        }
+        assert!(!hub_dir.path().join("Doomed.md").exists());
+
+        std::env::remove_var("ARC_LABS_MULTI_TEST_TOKEN");
     }
 
     /// The upgrade path, as a test.

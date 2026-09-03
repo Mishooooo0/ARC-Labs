@@ -166,6 +166,34 @@ export interface Transport {
 }
 
 /**
+ * Fill in settings sections an older server does not send.
+ *
+ * The versioning contract says a newer client degrades against an older server.
+ * Without this it does the opposite: `draft.sync.role` on a config with no
+ * `sync` throws a `TypeError` inside a Svelte effect, which kills every later
+ * effect in that component — the Settings modal stops responding to clicks
+ * entirely, and nothing on screen says why. Observed, not hypothesised.
+ *
+ * Defaults match the Rust side's `Default` impls. A server that does send a
+ * section always wins; this only supplies what is absent.
+ */
+export function withSettingsDefaults(c: Config): Config {
+  return {
+    ...c,
+    trash: c.trash ?? { retentionDays: 7 },
+    sync: c.sync ?? {
+      role: "standalone",
+      hub: "",
+      tokenEnv: "ARC_LABS_SYNC_TOKEN",
+      cadence: "manual",
+      hour: 3,
+      minute: 0,
+      utcOffsetMinutes: 0,
+    },
+  };
+}
+
+/**
  * A per-tab, per-window id. Not persisted: two tabs on the same machine are two
  * clients and must not swallow each other's events.
  */
@@ -541,14 +569,18 @@ class ServerTransport implements Transport {
     return this.#call<SyncReport>("sync/now", { method: "POST" });
   }
 
-  config() {
-    return this.#call<Config>("config");
+  async config() {
+    return withSettingsDefaults(await this.#call<Config>("config"));
   }
-  saveConfig(config: Config) {
-    return this.#call<Config>("config", {
-      method: "POST",
-      body: JSON.stringify(config),
-    });
+  async saveConfig(config: Config) {
+    // Normalised on the way back too: the panel renders what the server
+    // returned, so an older server's reply has to be as safe as its first one.
+    return withSettingsDefaults(
+      await this.#call<Config>("config", {
+        method: "POST",
+        body: JSON.stringify(config),
+      }),
+    );
   }
 
   browse(path?: string) {
@@ -773,11 +805,11 @@ class DesktopTransport implements Transport {
     return this.#invoke<SyncReport>("sync_now");
   }
 
-  config() {
-    return this.#invoke<Config>("get_config");
+  async config() {
+    return withSettingsDefaults(await this.#invoke<Config>("get_config"));
   }
-  saveConfig(config: Config) {
-    return this.#invoke<Config>("set_config", { config });
+  async saveConfig(config: Config) {
+    return withSettingsDefaults(await this.#invoke<Config>("set_config", { config }));
   }
 
   browse(path?: string) {

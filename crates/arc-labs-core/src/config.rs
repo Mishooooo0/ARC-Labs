@@ -216,6 +216,14 @@ pub struct SyncConfig {
     /// choosing 3am means 3am where they are.
     pub hour: u32,
     pub minute: u32,
+    /// Minutes this machine's local time is ahead of UTC.
+    ///
+    /// Carried here because `std` cannot tell you the local offset and this
+    /// workspace has no date-time dependency to ask — but the UI runs in a
+    /// browser or a webview, which knows it exactly, so it fills this in when a
+    /// schedule is set. Defaulting to 0 means a headless server with nobody to
+    /// ask schedules in UTC, which is the right answer for a machine in a rack.
+    pub utc_offset_minutes: i32,
     /// When the last pass fully succeeded, RFC 3339. Persisted so a window
     /// missed while the machine was off runs at next start instead of being
     /// silently skipped until the same time tomorrow.
@@ -232,6 +240,7 @@ impl Default for SyncConfig {
             cadence: Cadence::Manual,
             hour: 3,
             minute: 0,
+            utc_offset_minutes: 0,
             last_sync_at: None,
         }
     }

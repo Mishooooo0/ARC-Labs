@@ -164,6 +164,31 @@ impl crate::Api {
         Ok(())
     }
 
+    /// This machine's schedule, or `None` when nothing is scheduled.
+    ///
+    /// `None` for a standalone vault, a hub, or a client set to sync only when
+    /// asked — three different reasons that all mean "the daemon has nothing to
+    /// do", which is why they collapse to one answer here.
+    pub fn schedule(&self) -> Option<arc_labs_sync::schedule::Schedule> {
+        use arc_labs_sync::schedule::{Cadence, Schedule};
+        let config = self.config();
+        if config.resolved_role() != arc_labs_core::Role::Client {
+            return None;
+        }
+        let cadence = match config.sync.cadence {
+            arc_labs_core::Cadence::Manual => return None,
+            arc_labs_core::Cadence::Daily => Cadence::Daily,
+            arc_labs_core::Cadence::Weekly => Cadence::Weekly,
+            arc_labs_core::Cadence::Monthly => Cadence::Monthly,
+        };
+        Some(Schedule {
+            cadence,
+            hour: config.sync.hour.min(23),
+            minute: config.sync.minute.min(59),
+            utc_offset_secs: i64::from(config.sync.utc_offset_minutes) * 60,
+        })
+    }
+
     fn local_side(&self) -> ApiResult<VaultSide<'_>> {
         let root = self.with_vault(|v| Ok(v.root().path().to_path_buf()))?;
         Ok(VaultSide { api: self, root })
@@ -229,11 +254,18 @@ impl pass::Local for VaultSide<'_> {
         // it through this path.
         self.api
             .hub_write(&Self::vp(path)?, bytes, None)
+            .map(|_| ())
             .map_err(api_err)
     }
 
     fn delete(&self, path: &str) -> arc_labs_sync::Result<()> {
-        self.api.hub_delete(&Self::vp(path)?, None).map_err(api_err)
+        // The generation is the hub's answer to "did anything else change".
+        // A local vault has no other writer coming through this path, so there
+        // is nothing to carry forward and it is dropped here.
+        self.api
+            .hub_delete(&Self::vp(path)?, None)
+            .map(|_| ())
+            .map_err(api_err)
     }
 
     fn ledger_keys(&self) -> arc_labs_sync::Result<Vec<String>> {
@@ -273,4 +305,87 @@ fn sync_err(e: arc_labs_sync::SyncError) -> ApiError {
         _ => ErrorCode::Io,
     };
     ApiError::new(code, e.to_string())
+}
+
+// ── The daemon ──────────────────────────────────────────────────────────────
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+/// A running sync daemon. Dropping it stops the thread.
+///
+/// The same shape as [`crate::weave::WeaveDaemon`], deliberately: one background
+/// pattern in this product, not two. Stop flag, short sleep slices, `Drop` that
+/// joins.
+pub struct SyncDaemon {
+    stop: Arc<AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl SyncDaemon {
+    pub fn stop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
+}
+
+impl Drop for SyncDaemon {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+/// Start the scheduled-sync daemon.
+///
+/// Wakes every 30 seconds to ask a cheap question — is a pass due? — and does
+/// nothing the rest of the time. That is much more often than any cadence
+/// fires, and deliberately: a machine that was asleep through its window should
+/// sync shortly after waking, not at the same time tomorrow.
+///
+/// It sleeps in 250 ms slices so quitting the app does not wait out the poll,
+/// which is the difference between a clean exit and something that looks like a
+/// hang.
+pub fn spawn(api: Arc<crate::Api>) -> SyncDaemon {
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = stop.clone();
+
+    let handle = std::thread::Builder::new()
+        .name("arc-sync".into())
+        .spawn(move || {
+            while !flag.load(Ordering::Relaxed) {
+                if let Some(schedule) = api.schedule() {
+                    let last = api.config().sync.last_sync_at;
+                    if schedule.due(last.as_deref(), crate::now_secs() as i64) {
+                        match api.sync_now() {
+                            Ok(r) => tracing::info!(
+                                pushed = r.pushed,
+                                pulled = r.pulled,
+                                conflicts = r.conflicts.len(),
+                                problems = r.problems.len(),
+                                "scheduled sync"
+                            ),
+                            // Never fatal to the daemon. A hub that is down
+                            // now may be up in half an hour, and a daemon that
+                            // exited on the first failure would need the app
+                            // restarted to ever try again.
+                            Err(e) => tracing::warn!(error = %e.message, "scheduled sync failed"),
+                        }
+                    }
+                }
+                for _ in 0..120 {
+                    if flag.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(250));
+                }
+            }
+        })
+        .expect("spawning the sync thread");
+
+    SyncDaemon {
+        stop,
+        handle: Some(handle),
+    }
 }

@@ -122,17 +122,25 @@ impl crate::Api {
     /// inaccurately is worse than one that stays silent about what it does not
     /// itself know — the same reasoning that keeps drafting out of the egress
     /// log in `draft.rs`.
+    /// Returns the generation the vault is at **after** this write.
+    ///
+    /// A write of its own bumps the generation, so a client pushing several
+    /// files would invalidate itself between the first and the second and get a
+    /// 409 for everything after file one. Handing the new value back lets the
+    /// caller carry it forward, which is the same thing an ETag does and the
+    /// reason this is not simply re-read: re-reading cannot tell "my write" from
+    /// "someone else's", and that distinction is the whole point of the check.
     pub fn hub_write(
         &self,
         path: &VaultPath,
         bytes: &[u8],
         generation: Option<&str>,
-    ) -> ApiResult<()> {
+    ) -> ApiResult<String> {
         self.check_generation(generation)?;
         self.with_vault(|v| Ok(v.write_bytes(path, bytes)?))?;
         let _ = self.reindex_note(path);
         self.publish(crate::EventKind::Edited, Some(path), None);
-        Ok(())
+        Ok(self.generation())
     }
 
     /// Delete one file, on behalf of a machine that deleted it.
@@ -147,14 +155,14 @@ impl crate::Api {
     /// already has a ledger entry there. Recording a second one attributed to
     /// the hub would put a change in the log that the hub did not make, and the
     /// merge would then deliver the true one beside it.
-    pub fn hub_delete(&self, path: &VaultPath, generation: Option<&str>) -> ApiResult<()> {
+    pub fn hub_delete(&self, path: &VaultPath, generation: Option<&str>) -> ApiResult<String> {
         self.check_generation(generation)?;
 
         match self.with_vault(|v| Ok(v.delete_note(path)?)) {
             Ok(_) => {}
             // Already gone is the goal, not a failure. Two clients that both
             // deleted the same note must not turn the second one into an error.
-            Err(e) if e.code == ErrorCode::NoteNotFound => return Ok(()),
+            Err(e) if e.code == ErrorCode::NoteNotFound => return Ok(self.generation()),
             Err(e) => return Err(e),
         }
 
@@ -162,7 +170,7 @@ impl crate::Api {
         let days = self.config().trash.retention_days;
         let _ = self.with_vault(|v| Ok(v.purge_trash(days, crate::now_secs())));
         self.publish(crate::EventKind::Deleted, Some(path), None);
-        Ok(())
+        Ok(self.generation())
     }
 
     /// Which of these object hashes this hub does not have.

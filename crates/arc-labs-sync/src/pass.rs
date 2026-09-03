@@ -112,10 +112,16 @@ pub fn run(local: &dyn Local, hub: &Hub) -> Result<SyncReport> {
         Err(e) => report.problems.push(format!("history: {e}")),
     }
 
+    // Carried forward across writes. Each one moves the hub, so the value that
+    // was current when the plan was made is stale the moment the first file
+    // lands — a client pushing two files would otherwise collide with itself and
+    // 409 on everything after the first.
+    let mut generation = there.generation.clone();
     for action in &actions {
-        let outcome = apply(local, hub, &there.generation, action, &mut report);
-        if let Err(e) = outcome {
-            report.problems.push(format!("{}: {e}", action.path()));
+        match apply(local, hub, &generation, action, &mut report) {
+            Ok(Some(now)) => generation = now,
+            Ok(None) => {}
+            Err(e) => report.problems.push(format!("{}: {e}", action.path())),
         }
     }
 
@@ -128,29 +134,34 @@ pub fn run(local: &dyn Local, hub: &Hub) -> Result<SyncReport> {
     Ok(report)
 }
 
+/// Do one thing. Returns the hub's new generation when this moved the hub.
 fn apply(
     local: &dyn Local,
     hub: &Hub,
     generation: &str,
     action: &Action,
     report: &mut SyncReport,
-) -> Result<()> {
-    match action {
+) -> Result<Option<String>> {
+    Ok(match action {
         Action::Push(path) => {
-            hub.write(path, &local.read(path)?, generation)?;
+            let now = hub.write(path, &local.read(path)?, generation)?;
             report.pushed += 1;
+            Some(now)
         }
         Action::Pull(path) => {
             local.write(path, &hub.read(path)?)?;
             report.pulled += 1;
+            None
         }
         Action::PushDelete(path) => {
-            hub.delete(path, generation)?;
+            let now = hub.delete(path, generation)?;
             report.deleted_there += 1;
+            Some(now)
         }
         Action::PullDelete(path) => {
             local.delete(path)?;
             report.deleted_here += 1;
+            None
         }
         Action::Conflict { path, kind } => {
             // Recorded and left alone. Neither copy is touched.
@@ -158,9 +169,9 @@ fn apply(
                 path: path.clone(),
                 kind: kind.name().into(),
             });
+            None
         }
-    }
-    Ok(())
+    })
 }
 
 /// Move history both ways, and the content it refers to with it.
