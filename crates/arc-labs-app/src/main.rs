@@ -220,6 +220,18 @@ fn index_stats(api: tauri::State<'_, Arc<Api>>) -> CmdResult<Q::IndexStats> {
     api.index_stats()
 }
 
+/// One MCP request, answered in-process.
+///
+/// The settings panel uses this to ask the server what it offers, which means
+/// the panel *is* an MCP client rather than a description of one — the tool list
+/// it shows is the list an external agent gets, and the two cannot drift apart.
+/// The browser shell reaches the same handler over `POST /api/v1/mcp`.
+#[tauri::command]
+fn mcp_request(api: tauri::State<'_, Arc<Api>>, body: String) -> String {
+    let api = Arc::clone(&api);
+    arc_labs_mcp::handle(&api, &body).unwrap_or_default()
+}
+
 #[tauri::command]
 fn get_config(api: tauri::State<'_, Arc<Api>>) -> arc_labs_api::Settings {
     api.settings()
@@ -457,6 +469,7 @@ fn main() {
             pick_folder,
             api_version,
             get_config,
+            mcp_request,
             set_config,
             create_note,
             rename_note,

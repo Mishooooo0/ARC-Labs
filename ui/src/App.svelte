@@ -42,7 +42,7 @@
   import Timeline from "./components/Timeline.svelte";
   import VaultStatus from "./components/VaultStatus.svelte";
 
-  type View = "home" | "note" | "search" | "graph" | "inbox" | "settings";
+  type View = "home" | "note" | "search" | "graph" | "inbox";
 
   const THEMES = ["arc-dark", "arc-light", "arc-terminal"] as const;
 
@@ -552,8 +552,11 @@
     }
   }
 
+  /** Settings is an overlay, not a view: it never takes the pane. */
+  let settingsOpen = $state(false);
+
   async function openSettings() {
-    view = "settings";
+    settingsOpen = true;
     configAdjusted = null;
     try {
       config = await transport.config();
@@ -1018,6 +1021,18 @@
         </button>
       {/if}
       <button class="chip data" onclick={() => (paletteOpen = true)} title="⌘K">⌘K</button>
+      <button
+        class="chip gear"
+        onclick={() => void openSettings()}
+        title="Settings · ⌘,"
+        aria-label="Settings"
+      >
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor"
+             stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="3" />
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6h.09A1.65 1.65 0 0 0 10.6 3.09V3a2 2 0 1 1 4 0v.09A1.65 1.65 0 0 0 16.11 4.6a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 20.4 9v.09a1.65 1.65 0 0 0 1.51 1H22a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+        </svg>
+      </button>
       <button class="chip data" onclick={cycleTheme} title="Cycle theme">
         {theme.replace("arc-", "")}
       </button>
@@ -1103,23 +1118,6 @@
               searchHits = [];
             }}
           />
-        {:else if view === "settings"}
-          {#if config}
-            <Settings
-              {config}
-              version={apiVersion}
-              can={(c) => transport.can(c)}
-              saving={savingConfig}
-              adjusted={configAdjusted}
-              onsave={(c) => void saveConfig(c)}
-              onclose={() => (view = "home")}
-            />
-          {:else}
-            <EmptyState
-              title="Settings"
-              description="Reading the current configuration from the server."
-            />
-          {/if}
         {:else if view === "inbox"}
           <Inbox
             {suggestions}
@@ -1255,6 +1253,18 @@
       {/if}
     </div>
   </div>
+
+  {#if settingsOpen && config}
+    <Settings
+      {config}
+      version={apiVersion}
+      can={(c) => transport.can(c)}
+      saving={savingConfig}
+      adjusted={configAdjusted}
+      onsave={(c) => void saveConfig(c)}
+      onclose={() => (settingsOpen = false)}
+    />
+  {/if}
 
   <Palette bind:open={paletteOpen} bind:mode={paletteMode} {commands} onopen={openNote} />
 
@@ -1452,6 +1462,12 @@
     color: var(--arc-fg-dim);
     background: var(--arc-bg-3);
   }
+  .gear {
+    display: inline-flex;
+    align-items: center;
+    padding: var(--arc-space-1) var(--arc-space-2);
+  }
+
   .chip.active {
     color: var(--arc-accent);
     background: var(--arc-accent-wash);

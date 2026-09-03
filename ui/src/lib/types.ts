@@ -489,3 +489,9 @@ export interface Config {
     intervalSecs: number;
   };
 }
+
+/** One tool the MCP server exposes, as `tools/list` returns it. */
+export interface McpTool {
+  name: string;
+  description: string;
+}

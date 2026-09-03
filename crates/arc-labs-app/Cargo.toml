@@ -27,3 +27,4 @@ tokio = { workspace = true, features = ["sync", "rt-multi-thread", "net", "macro
 arc-labs-index.workspace = true
 arc-labs-weave.workspace = true
 arc-labs-server.workspace = true
+arc-labs-mcp.workspace = true

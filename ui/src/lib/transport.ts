@@ -134,6 +134,15 @@ export interface Transport {
   /** Returns what was actually stored, which may differ from what was sent. */
   saveConfig(config: Config): Promise<Config>;
 
+  /**
+   * Send one JSON-RPC request to this deployment's MCP server.
+   *
+   * The settings panel uses it to ask what the server offers, so the tool list
+   * it shows is literally the list an external agent receives — there is no
+   * second copy to fall out of date.
+   */
+  mcp(request: unknown): Promise<unknown>;
+
   browse(path?: string): Promise<DirListing>;
   openVault(path: string): Promise<VaultInfo>;
   /** Native folder picker. `null` in a browser, which has none. */
@@ -472,6 +481,13 @@ class ServerTransport implements Transport {
     // runs in-process, does send it.
   }
 
+  async mcp(request: unknown) {
+    return this.#call<unknown>("mcp", {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
+  }
+
   config() {
     return this.#call<Config>("config");
   }
@@ -667,6 +683,13 @@ class DesktopTransport implements Transport {
     // Deliberately not awaited and deliberately swallowing errors: this runs on
     // the keystroke path, where the only acceptable cost is the one IPC hop.
     void this.#invoke<void>("user_active").catch(() => {});
+  }
+
+  async mcp(request: unknown) {
+    const raw = await this.#invoke<string>("mcp_request", {
+      body: JSON.stringify(request),
+    });
+    return raw ? (JSON.parse(raw) as unknown) : null;
   }
 
   config() {
