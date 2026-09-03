@@ -218,6 +218,28 @@ impl Vault {
         Ok(bytes.len())
     }
 
+    /// Write bytes to a path, creating it or replacing what is there.
+    ///
+    /// **The one write here that does overwrite**, and the only caller is sync
+    /// applying a change another machine already made. It is sound because of
+    /// what happens before it rather than anything it checks itself: the
+    /// content was reconciled against a base manifest, this path came back as
+    /// "only one side moved", and a path where both sides moved never reaches
+    /// here — it became a conflict for a person to settle.
+    ///
+    /// Bytes rather than text because a vault holds images and PDFs next to its
+    /// notes, and a sync that could only carry UTF-8 would quietly drop them.
+    ///
+    /// No `FileFidelity` round-trip, deliberately: the bytes are already exactly
+    /// what the other machine holds, and re-encoding them to this machine's
+    /// conventions would make the two copies differ and the next pass see a
+    /// change that nobody made.
+    pub fn write_bytes(&self, path: &VaultPath, bytes: &[u8]) -> Result<usize> {
+        let abs = self.root.resolve_for_create(path)?;
+        atomic::replace(&abs, bytes)?;
+        Ok(bytes.len())
+    }
+
     /// Move a note to a new path.
     ///
     /// Refuses to overwrite the destination, for the same reason `create_note`

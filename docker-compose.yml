@@ -1,29 +1,45 @@
-# Bring up ARC-LABS against a vault on the host.
+# The vault server: an always-on ARC-LABS that other machines sync to.
 #
-#   ARC_LABS_VAULT_PATH=~/notes docker compose up
+#   ARC_LABS_TOKEN=$(openssl rand -hex 24) \
+#   ARC_LABS_VAULT_PATH=~/vault \
+#   docker compose up -d
 #
-# The token is printed once in the container logs; the bind is not loopback, so
-# there is no configuration in which the port is open without one.
+# It is the same binary the desktop app runs, told it is a hub. There is no
+# separate server build, so a fix in one is a fix in both.
 
 services:
   arc-labs:
     build: .
-    image: arc-labs:0.1.0
+    image: arc-labs:0.0.1
     # The image runs as uid 10001. A bind-mounted vault is owned by whoever
     # created it on the host, and a mismatch means the container cannot write
     # the index or the ledger — the app comes up looking fine and silently
     # cannot save. Run as the invoking user instead.
     user: "${UID:-1000}:${GID:-1000}"
     ports:
+      # Loopback by default even here. Exposing a vault to the network is a
+      # decision to make deliberately — change this to "7777:7777" once you
+      # have set a token, or better, put a TLS proxy in front.
       - "127.0.0.1:7777:7777"
     volumes:
-      # Read-only until Phase 1 introduces a write path. The container cannot
-      # modify the vault even if something in it tried to.
-      - "${ARC_LABS_VAULT_PATH:-./fixtures/vaults/etron}:/vault:ro"
+      # Writable, because a hub is written to. This mount used to be `:ro` with
+      # a comment about Phase 1 not having a write path yet; that stopped being
+      # true five phases ago, and a read-only hub accepts nothing.
+      - "${ARC_LABS_VAULT_PATH:-./fixtures/vaults/sample}:/vault"
     environment:
       ARC_LABS_VAULT: /vault
-      # Reaching the host's Ollama from inside the container (Phase 5).
+      # What this instance is. Without it the container is an ordinary vault
+      # that refuses sync requests — deliberately, so "on disk only" means it.
+      ARC_LABS_ROLE: hub
+      # Pin the token, or a generated one changes on every restart and every
+      # device has to be re-pointed at the hub. Set it in the environment or an
+      # .env file; never commit it.
+      ARC_LABS_TOKEN: "${ARC_LABS_TOKEN:?set ARC_LABS_TOKEN — a hub without a pinned token invalidates every device on restart}"
+      # Who the hub's own writes are attributed to. A container has no $USER,
+      # and without this every entry it writes lands in the ledger as "unknown".
+      ARC_LABS_ACTOR: "${ARC_LABS_ACTOR:-hub}"
       ARC_LABS_LOG: "arc_labs=info"
     extra_hosts:
+      # Reaching the host's Ollama from inside the container (Phase 5).
       - "host.docker.internal:host-gateway"
     restart: unless-stopped

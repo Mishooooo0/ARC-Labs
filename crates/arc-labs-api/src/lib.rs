@@ -17,6 +17,7 @@
 
 pub mod draft;
 pub mod error;
+pub mod hub;
 pub mod runs;
 pub mod templates;
 pub mod types;
@@ -29,6 +30,7 @@ use arc_labs_core::{Config, LineEnding, Vault, VaultPath};
 use arc_labs_index::{query, Index};
 
 pub use error::{ApiError, ApiResult, ErrorCode};
+pub use hub::HubManifest;
 pub use templates::Template;
 pub use types::*;
 
@@ -121,6 +123,15 @@ pub struct Api {
     events: tokio::sync::broadcast::Sender<VaultEvent>,
     /// The client id to stamp on events, when a shell knows it.
     origin: Mutex<Option<String>>,
+    /// This process, distinguished from every previous one.
+    ///
+    /// Half of the sync generation stamp. Without it a client holding a
+    /// generation from before a restart could quote a number the fresh counter
+    /// has since climbed back to, and a push planned against a vault two
+    /// restarts ago would be accepted as current.
+    session: String,
+    /// Vault mutations since start. The other half of the generation stamp.
+    mutations: std::sync::atomic::AtomicU64,
 }
 
 impl Api {
@@ -140,6 +151,8 @@ impl Api {
             // listener which has stopped reading cannot pin much memory.
             events: tokio::sync::broadcast::channel(256).0,
             origin: Mutex::new(None),
+            session: new_session_id(),
+            mutations: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -173,6 +186,14 @@ impl Api {
             actor_kind: actor_kind.to_string(),
             at: arc_labs_ledger::now_rfc3339(),
         };
+        // Every mutation funnels through here, which makes this the one place
+        // the sync generation has to move. Piggy-backing on the event path
+        // rather than counting separately means a future write that forgets to
+        // bump the counter is also one that forgets to tell the open windows —
+        // a failure someone notices immediately.
+        self.mutations
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
         // `send` errors only when there are no receivers. That is the normal
         // case for a CLI run, and is not worth a log line.
         let _ = self.events.send(event);
@@ -621,9 +642,7 @@ impl Api {
             tracing::warn!(error = %e, path = %path, "could not record the deletion");
         }
 
-        if let Some(index) = self.index.lock().expect("index lock poisoned").as_ref() {
-            let _ = index.forget_note(path);
-        }
+        self.forget_indexed(path);
 
         // Again here, because a server can run for months without reopening a
         // vault, and a retention window that only applies at startup is not a
@@ -1367,6 +1386,17 @@ impl Api {
     }
 
     /// Re-index one note after it changed. Cheap enough to call on every save.
+    /// Drop a note from the search index, if there is one.
+    ///
+    /// Infallible from the caller's view: the index is derived, so failing to
+    /// update it is a staleness bug and never a reason to fail the delete that
+    /// already happened on disk.
+    pub(crate) fn forget_indexed(&self, path: &VaultPath) {
+        if let Some(index) = self.index.lock().expect("index lock poisoned").as_ref() {
+            let _ = index.forget_note(path);
+        }
+    }
+
     pub fn reindex_note(&self, path: &VaultPath) -> ApiResult<()> {
         let state = self.state.read().expect("state lock poisoned");
         let vault = state.vault.as_ref().ok_or_else(ApiError::no_vault)?;
@@ -1424,6 +1454,21 @@ impl Api {
     }
 }
 
+/// An id for this process, distinct from any other incarnation of it.
+///
+/// Hashed from the clock and the process id rather than pulled from a random
+/// crate: this identifies a run, it does not secure anything. A client can see
+/// it, and knowing it lets someone do exactly nothing they could not do by
+/// asking for the manifest.
+fn new_session_id() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let seed = format!("{nanos}-{}", std::process::id());
+    blake3::hash(seed.as_bytes()).to_hex()[..12].to_string()
+}
+
 /// Seconds since the epoch, for the trash retention window.
 ///
 /// A clock going backwards yields 0, which makes every window look infinitely
@@ -1444,9 +1489,17 @@ fn canvas_err(e: arc_labs_canvas::CanvasError) -> ApiError {
     )
 }
 
-fn ledger_err(e: arc_labs_ledger::LedgerError) -> ApiError {
+pub(crate) fn ledger_err(e: arc_labs_ledger::LedgerError) -> ApiError {
     tracing::debug!(error = %e, "ledger error");
-    ApiError::new(ErrorCode::Io, e.public())
+    // A malformed ledger key is the caller's fault, not this server's. It
+    // arrives over the network from the sync endpoints, so reporting it as an
+    // internal error would tell a client to retry something that will never
+    // work — and would file a rejected traversal attempt under "we broke".
+    let code = match &e {
+        arc_labs_ledger::LedgerError::BadKey(_) => ErrorCode::InvalidPath,
+        _ => ErrorCode::Io,
+    };
+    ApiError::new(code, e.public())
 }
 
 fn save_result(saved: arc_labs_core::Saved, content: &str) -> SaveResult {

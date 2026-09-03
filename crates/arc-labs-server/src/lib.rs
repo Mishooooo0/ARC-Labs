@@ -229,6 +229,31 @@ pub fn router(api: Arc<Api>, cfg: &ServerConfig) -> Router {
         .route("/config", get(get_config).post(set_config))
         .route("/browse", get(browse))
         .route("/vault/open", post(open_vault))
+        // ── The hub half of sync ────────────────────────────────────────────
+        //
+        // Present only when this instance is a hub, so a vault someone chose to
+        // keep on disk does not quietly answer sync requests just because it
+        // happens to be serving a browser. See `hub_only`.
+        .route("/hub/manifest", get(hub_manifest))
+        .route("/hub/file", get(hub_read).post(hub_write))
+        .route("/hub/delete", post(hub_delete))
+        .route("/hub/objects/missing", post(hub_missing_objects))
+        .route("/hub/object", get(hub_read_object).post(hub_write_object))
+        .route("/hub/ledger/keys", get(hub_ledger_keys))
+        .route("/hub/ledger", get(hub_read_ledger).post(hub_merge_ledger))
+        // Anything else under /api is a route this build does not have.
+        //
+        // Without this it falls through to the SPA and a client asking an older
+        // server for an endpoint it lacks gets `200 OK` and a page of HTML,
+        // which parses as neither an answer nor an error — the worst possible
+        // reply to "do you support this?". The versioning contract says a
+        // client degrades gracefully against an older server; it can only do
+        // that if the server says no in a language the client speaks.
+        //
+        // Inside the nested router and before the auth layer, so it is behind
+        // the token too: an unauthenticated caller cannot map which endpoints
+        // exist by watching which ones 404.
+        .fallback(unknown_endpoint)
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth))
         .with_state(state.clone());
 
@@ -904,6 +929,138 @@ async fn open_vault(
     Ok(Json(s.api.open_vault(std::path::Path::new(&body.path))?))
 }
 
+/// Every `/api` path this build does not serve.
+async fn unknown_endpoint() -> WebError {
+    WebError(ApiError::new(
+        ErrorCode::NoteNotFound,
+        "this server does not have that endpoint; ask /api/version for what it supports",
+    ))
+}
+
+// ── Hub ─────────────────────────────────────────────────────────────────────
+
+/// Refuse unless this instance was told it is a vault server.
+///
+/// "On disk only" has to mean it. Without this, any ARC-LABS serving a browser
+/// would also accept another machine's notes into its vault the moment someone
+/// pointed a client at it — which is a surprising thing for a program to do on
+/// the strength of a default.
+fn hub_only(s: &AppState) -> Result<(), ApiError> {
+    if s.api.config().resolved_role() == arc_labs_core::Role::Hub {
+        return Ok(());
+    }
+    Err(ApiError::new(
+        ErrorCode::NotPermitted,
+        "this ARC-LABS is not a vault server. Set role = \"hub\" in [sync], or ARC_LABS_ROLE=hub, on the instance other machines sync to.",
+    ))
+}
+
+#[derive(Deserialize)]
+struct GenQuery {
+    path: VaultPath,
+    /// The generation the caller planned against. Absent is allowed; see
+    /// `Api::check_generation`.
+    #[serde(default)]
+    generation: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct HashQuery {
+    hash: String,
+}
+
+#[derive(Deserialize)]
+struct KeyQuery {
+    key: String,
+}
+
+async fn hub_manifest(State(s): State<Arc<AppState>>) -> WebResult<arc_labs_api::HubManifest> {
+    hub_only(&s)?;
+    Ok(Json(s.api.hub_manifest()?))
+}
+
+/// Raw bytes, not JSON. A vault holds images and PDFs, and base64 in a JSON
+/// envelope would inflate every transfer by a third to carry them.
+async fn hub_read(
+    State(s): State<Arc<AppState>>,
+    Query(q): Query<GenQuery>,
+) -> Result<Response, WebError> {
+    hub_only(&s)?;
+    let bytes = s.api.hub_read(&q.path)?;
+    Ok(([(header::CONTENT_TYPE, "application/octet-stream")], bytes).into_response())
+}
+
+async fn hub_write(
+    State(s): State<Arc<AppState>>,
+    Query(q): Query<GenQuery>,
+    body: axum::body::Bytes,
+) -> WebResult<()> {
+    hub_only(&s)?;
+    let api = Arc::clone(&s.api);
+    let generation = q.generation.clone();
+    tokio::task::spawn_blocking(move || api.hub_write(&q.path, &body, generation.as_deref()))
+        .await
+        .map_err(|e| ApiError::new(ErrorCode::Io, e.to_string()))??;
+    Ok(Json(()))
+}
+
+async fn hub_delete(State(s): State<Arc<AppState>>, Json(q): Json<GenQuery>) -> WebResult<()> {
+    hub_only(&s)?;
+    let api = Arc::clone(&s.api);
+    tokio::task::spawn_blocking(move || api.hub_delete(&q.path, q.generation.as_deref()))
+        .await
+        .map_err(|e| ApiError::new(ErrorCode::Io, e.to_string()))??;
+    Ok(Json(()))
+}
+
+#[derive(Deserialize)]
+struct HashesBody {
+    hashes: Vec<String>,
+}
+
+async fn hub_missing_objects(
+    State(s): State<Arc<AppState>>,
+    Json(b): Json<HashesBody>,
+) -> WebResult<Vec<String>> {
+    hub_only(&s)?;
+    Ok(Json(s.api.hub_missing_objects(&b.hashes)?))
+}
+
+async fn hub_read_object(
+    State(s): State<Arc<AppState>>,
+    Query(q): Query<HashQuery>,
+) -> Result<Response, WebError> {
+    hub_only(&s)?;
+    Ok(s.api.hub_read_object(&q.hash)?.into_response())
+}
+
+async fn hub_write_object(State(s): State<Arc<AppState>>, body: String) -> WebResult<String> {
+    hub_only(&s)?;
+    Ok(Json(s.api.hub_write_object(&body)?))
+}
+
+async fn hub_ledger_keys(State(s): State<Arc<AppState>>) -> WebResult<Vec<String>> {
+    hub_only(&s)?;
+    Ok(Json(s.api.hub_ledger_keys()?))
+}
+
+async fn hub_read_ledger(
+    State(s): State<Arc<AppState>>,
+    Query(q): Query<KeyQuery>,
+) -> Result<Response, WebError> {
+    hub_only(&s)?;
+    Ok(s.api.hub_read_ledger(&q.key)?.into_response())
+}
+
+async fn hub_merge_ledger(
+    State(s): State<Arc<AppState>>,
+    Query(q): Query<KeyQuery>,
+    body: String,
+) -> WebResult<usize> {
+    hub_only(&s)?;
+    Ok(Json(s.api.hub_merge_ledger(&q.key, &body)?))
+}
+
 /// Serve until the process is asked to stop.
 pub async fn serve(api: Arc<Api>, cfg: ServerConfig) -> anyhow::Result<()> {
     let app = router(api, &cfg);
@@ -1044,6 +1201,72 @@ mod tests {
                 assert_eq!(code, "400", "traversal {attack} was not rejected");
             }
         }
+    }
+
+    /// Two answers a client depends on being able to tell apart.
+    ///
+    /// "On disk only" has to mean it, so a vault that was not told it is a hub
+    /// refuses sync outright. And a route this build does not have must say so
+    /// in JSON — it used to fall through to the SPA and return 200 with a page
+    /// of HTML, which is neither an answer nor an error and is the worst
+    /// possible reply to "do you support this?".
+    #[tokio::test]
+    async fn a_standalone_vault_refuses_sync_and_unknown_routes_say_so() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.md"), b"# a\n").unwrap();
+
+        let api = Arc::new(Api::new(
+            Config::default(),
+            None,
+            Capabilities::local_server(),
+        ));
+        api.open_vault(tmp.path()).unwrap();
+
+        // A real UI directory, so the last assertion is testing the SPA
+        // fallback rather than a missing fixture.
+        let ui = tempfile::tempdir().unwrap();
+        std::fs::write(ui.path().join("index.html"), b"<!doctype html>\n").unwrap();
+        let mut c = cfg(IpAddr::V4(Ipv4Addr::LOCALHOST), None);
+        c.ui_dir = ui.path().to_path_buf();
+
+        let app = router(api, &c);
+        let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await });
+
+        let code = |path: String| async move {
+            let url = format!("http://{addr}{path}");
+            let out = tokio::process::Command::new("curl")
+                .args(["-s", "-o", "/dev/null", "-w", "%{http_code}", &url])
+                .output()
+                .await
+                .ok()?;
+            String::from_utf8(out.stdout).ok()
+        };
+
+        let Some(first) = code("/api/version".into()).await else {
+            return;
+        };
+        if first == "000" {
+            eprintln!("skipping: curl unavailable");
+            return;
+        }
+        assert_eq!(first, "200", "the handshake must still resolve");
+
+        assert_eq!(
+            code("/api/v1/hub/manifest".into()).await.unwrap(),
+            "403",
+            "a vault nobody made a hub must not answer sync requests"
+        );
+        assert_eq!(
+            code("/api/v1/no-such-endpoint".into()).await.unwrap(),
+            "404",
+            "an unknown API route must not return the app shell"
+        );
+        // The SPA fallback still works for everything that is not /api.
+        assert_eq!(code("/some/client/route".into()).await.unwrap(), "200");
     }
 
     /// The upgrade path, as a test.

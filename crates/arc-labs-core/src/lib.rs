@@ -16,7 +16,9 @@ pub mod seam;
 pub mod tree;
 pub mod vault;
 
-pub use config::{Config, Density, ModelAccess, UiConfig, WeaveConfig};
+pub use config::{
+    Cadence, Config, Density, ModelAccess, Role, SyncConfig, TrashConfig, UiConfig, WeaveConfig,
+};
 pub use error::{Error, Result};
 pub use fidelity::{FileFidelity, LineEnding, NoteText};
 pub use markdown::{render, Heading, RenderedNote, WikiLink};

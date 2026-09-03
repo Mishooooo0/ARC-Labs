@@ -46,6 +46,9 @@ pub struct Config {
     #[serde(default)]
     pub trash: TrashConfig,
 
+    #[serde(default)]
+    pub sync: SyncConfig,
+
     /// Folder holding note templates, relative to the vault root.
     ///
     /// A setting rather than a constant because plenty of vaults already keep
@@ -162,6 +165,92 @@ impl Default for TrashConfig {
     }
 }
 
+/// What this instance is, in a two-machine setup.
+///
+/// One binary, one engine — a hub is not a separate build, it is this one told
+/// that other machines sync to it. That keeps the container and the desktop app
+/// the same program with the same guarantees, which is the whole reason the
+/// shells are thin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Role {
+    /// On disk and nowhere else. The default, and a deliberate one: a notebook
+    /// that talked to a server before being asked would be the wrong product.
+    #[default]
+    Standalone,
+    /// Syncs to a hub.
+    Client,
+    /// Other machines sync to this one.
+    Hub,
+}
+
+/// How often a client syncs on its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Cadence {
+    /// Only when asked. The default — a schedule is something to turn on.
+    #[default]
+    Manual,
+    Daily,
+    Weekly,
+    Monthly,
+}
+
+/// Talking to a vault server.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SyncConfig {
+    pub role: Role,
+    /// The hub a client syncs to, e.g. `https://vault.example`.
+    pub hub: String,
+    /// **Name of the environment variable** holding the vault token — not the
+    /// token.
+    ///
+    /// A secret in a config file is a secret in a backup, in a screenshot, and
+    /// in whatever syncs the config. Naming the variable keeps the shape of the
+    /// setup in the file and the secret out of it, the same way `[model]` names
+    /// an endpoint rather than carrying credentials.
+    pub token_env: String,
+    pub cadence: Cadence,
+    /// Local hour to run at, 0–23. Local rather than UTC because someone
+    /// choosing 3am means 3am where they are.
+    pub hour: u32,
+    pub minute: u32,
+    /// When the last pass fully succeeded, RFC 3339. Persisted so a window
+    /// missed while the machine was off runs at next start instead of being
+    /// silently skipped until the same time tomorrow.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_sync_at: Option<String>,
+}
+
+impl Default for SyncConfig {
+    fn default() -> Self {
+        SyncConfig {
+            role: Role::Standalone,
+            hub: String::new(),
+            token_env: "ARC_LABS_SYNC_TOKEN".into(),
+            cadence: Cadence::Manual,
+            hour: 3,
+            minute: 0,
+            last_sync_at: None,
+        }
+    }
+}
+
+impl SyncConfig {
+    /// The vault token, from wherever `token_env` says it lives.
+    pub fn token(&self) -> Option<String> {
+        let name = self.token_env.trim();
+        if name.is_empty() {
+            return None;
+        }
+        std::env::var(name)
+            .ok()
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Config {
@@ -171,6 +260,7 @@ impl Default for Config {
             model: ModelConfig::default(),
             weave: WeaveConfig::default(),
             trash: TrashConfig::default(),
+            sync: SyncConfig::default(),
             templates_folder: default_templates_folder(),
         }
     }
@@ -279,6 +369,34 @@ impl Config {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "unknown".into())
     }
+
+    /// What this instance is: `ARC_LABS_ROLE` if set, else the config.
+    ///
+    /// The environment wins because the container is configured by compose and
+    /// has no config file to speak of — the same reason `ARC_LABS_VAULT` is
+    /// checked before the file. An unrecognised value falls back to the
+    /// configured role rather than guessing: a typo in `ARC_LABS_ROLE` should
+    /// not silently turn a hub into a standalone vault that quietly accepts
+    /// nothing.
+    pub fn resolved_role(&self) -> Role {
+        match std::env::var("ARC_LABS_ROLE")
+            .ok()
+            .map(|v| v.trim().to_lowercase())
+            .as_deref()
+        {
+            Some("standalone") => Role::Standalone,
+            Some("client") => Role::Client,
+            Some("hub") => Role::Hub,
+            Some(other) if !other.is_empty() => {
+                tracing::warn!(
+                    value = other,
+                    "ARC_LABS_ROLE is not one of standalone, client or hub;                      using the configured role instead"
+                );
+                self.sync.role
+            }
+            _ => self.sync.role,
+        }
+    }
 }
 
 fn home_dir() -> Option<PathBuf> {
@@ -364,6 +482,51 @@ mod tests {
 
         let back = Config::parse(&c.to_toml()).unwrap();
         assert_eq!(back, c);
+    }
+
+    /// A vault that has never heard of a server must keep working, and must not
+    /// start talking to one.
+    #[test]
+    fn a_config_with_no_sync_section_is_standalone_and_silent() {
+        let c = Config::parse("").unwrap();
+        assert_eq!(c.sync.role, Role::Standalone);
+        assert_eq!(c.sync.cadence, Cadence::Manual);
+        assert!(c.sync.hub.is_empty());
+        assert!(c.sync.last_sync_at.is_none());
+    }
+
+    #[test]
+    fn sync_settings_round_trip() {
+        let c = Config {
+            sync: SyncConfig {
+                role: Role::Client,
+                hub: "https://vault.example".into(),
+                cadence: Cadence::Weekly,
+                hour: 4,
+                last_sync_at: Some("2026-09-03T04:00:00Z".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(Config::parse(&c.to_toml()).unwrap(), c);
+    }
+
+    /// The secret is named, never stored. A token in the TOML is a token in a
+    /// backup, a screenshot, and whatever syncs the config.
+    #[test]
+    fn the_config_holds_the_name_of_the_secret_and_not_the_secret() {
+        let c =
+            Config::parse("[sync]\nrole = \"client\"\ntoken_env = \"MY_VAULT_TOKEN\"\n").unwrap();
+        assert_eq!(c.sync.token_env, "MY_VAULT_TOKEN");
+        assert!(
+            !c.to_toml().contains("secret-value"),
+            "no path in this type should ever serialise a token"
+        );
+
+        std::env::set_var("MY_VAULT_TOKEN", "  secret-value  ");
+        assert_eq!(c.sync.token().as_deref(), Some("secret-value"));
+        std::env::remove_var("MY_VAULT_TOKEN");
+        assert_eq!(c.sync.token(), None);
     }
 
     #[test]

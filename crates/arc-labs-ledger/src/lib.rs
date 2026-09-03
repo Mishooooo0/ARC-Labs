@@ -56,6 +56,10 @@ pub enum LedgerError {
     NoSuchEntry { index: usize, len: usize },
     #[error("entry {index} has no recorded content to restore")]
     NothingToRestore { index: usize },
+    /// A ledger key that is not 64 hex characters. Only reachable from a
+    /// network caller, and refused before it can become a path.
+    #[error("{0} is not a ledger key")]
+    BadKey(String),
     #[error(transparent)]
     Core(#[from] Box<arc_labs_core::Error>),
 }
@@ -82,6 +86,9 @@ impl LedgerError {
             LedgerError::NothingToRestore { index } => {
                 format!("entry {index} has no content to restore")
             }
+            // Says nothing about the ledger directory's layout. A caller
+            // probing for a traversal learns only that its input was refused.
+            LedgerError::BadKey(_) => "not a valid ledger key".into(),
             LedgerError::Core(e) => e.public(),
         }
     }
@@ -93,6 +100,12 @@ pub type Result<T> = std::result::Result<T, LedgerError>;
 pub struct Ledger {
     dir: PathBuf,
     objects: ObjectStore,
+}
+
+/// 64 lowercase hex characters, which is what `key_for` produces and the only
+/// thing that may become a filename here.
+fn is_key(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 impl Ledger {
@@ -120,6 +133,78 @@ impl Ledger {
     fn file_for(&self, path: &VaultPath) -> PathBuf {
         let key = blake3::hash(path.as_str().as_bytes()).to_hex();
         self.dir.join(format!("{key}.jsonl"))
+    }
+
+    /// The ledger key for a note: the same hash `file_for` uses.
+    ///
+    /// Public because sync moves ledgers **by key rather than by path**. The
+    /// key is derived identically on every machine, so two copies of one note's
+    /// history line up without either side having to recover a path from a
+    /// filename \u2014 which is not possible, the name being a hash.
+    ///
+    /// It also covers the case a manifest cannot: a deleted note still has a
+    /// history worth carrying, and its path appears in nobody's manifest.
+    pub fn key_for(path: &VaultPath) -> String {
+        blake3::hash(path.as_str().as_bytes()).to_hex().to_string()
+    }
+
+    /// Every ledger key in this vault.
+    pub fn keys(&self) -> Result<Vec<String>> {
+        let mut out = Vec::new();
+        let dir = match std::fs::read_dir(&self.dir) {
+            Ok(d) => d,
+            // No ledger directory is a vault nothing has happened in yet.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+            Err(e) => return Err(LedgerError::io(&self.dir, e)),
+        };
+        for entry in dir.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            if let Some(stem) = name.strip_suffix(".jsonl") {
+                if is_key(stem) {
+                    out.push(stem.to_string());
+                }
+            }
+        }
+        out.sort();
+        Ok(out)
+    }
+
+    /// One note's history verbatim, by key. Absent is empty, not an error.
+    pub fn raw_by_key(&self, key: &str) -> Result<String> {
+        let file = self.path_for_key(key)?;
+        match std::fs::read_to_string(&file) {
+            Ok(text) => Ok(text),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+            Err(e) => Err(LedgerError::io(&file, e)),
+        }
+    }
+
+    /// Replace one note's history, by key.
+    ///
+    /// The only caller is a sync merge, and a merge is a union \u2014 it can only
+    /// ever grow. Written beside and renamed so a crash cannot leave a
+    /// half-written history, which for an append-only log would be worse than
+    /// the crash.
+    pub fn replace_by_key(&self, key: &str, text: &str) -> Result<()> {
+        let file = self.path_for_key(key)?;
+        std::fs::create_dir_all(&self.dir).map_err(|e| LedgerError::io(&self.dir, e))?;
+        let tmp = file.with_extension("jsonl.tmp");
+        std::fs::write(&tmp, text.as_bytes()).map_err(|e| LedgerError::io(&tmp, e))?;
+        std::fs::rename(&tmp, &file).map_err(|e| LedgerError::io(&file, e))?;
+        Ok(())
+    }
+
+    /// A key is 64 hex characters and nothing else.
+    ///
+    /// This is a path-traversal guard on a value that arrives over the network:
+    /// without it `../../../etc/passwd` is a ledger key. `VaultPath` does this
+    /// job everywhere else, and a key is not a vault path, so it needs its own.
+    fn path_for_key(&self, key: &str) -> Result<PathBuf> {
+        if !is_key(key) {
+            return Err(LedgerError::BadKey(key.to_string()));
+        }
+        Ok(self.dir.join(format!("{key}.jsonl")))
     }
 
     /// Every entry for a note, oldest first.
