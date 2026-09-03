@@ -1,0 +1,139 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    /* Softened's roundness and motion, pushed harder on density: a smaller
+       topbar, a narrower sidebar, one step down the type scale, and tighter
+       rows. More vault on screen at once; less air around the prose. */
+    :root {
+      --bg0:#0e1113; --bg1:#14181b; --bg2:#1a1f23; --bg3:#222a2f; --bg4:#2b343a;
+      --line:#232b30; --line-strong:#313c43;
+      --fg:#d5dade; --dim:#8b959d; --faint:#5b656d;
+      --accent:#5f9e8c; --accent-dim:#3f6c60;
+      --human:#d9a05b; --agent:#5b8fd6;
+      --ui: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      --data: ui-monospace, "SF Mono", "Cascadia Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+      --r-sm:6px; --r:10px; --r-lg:12px;
+      --ease: cubic-bezier(0.16, 0.8, 0.32, 1);
+    }
+    body { margin:0; font-family:var(--ui); background:var(--bg0); color:var(--fg); }
+    a { color:var(--accent); } a:hover { color:#7ab8a4; }
+    .data { font-family:var(--data); }
+    @keyframes settle { from { opacity:0; transform:translateY(3px); } to { opacity:1; transform:none; } }
+    .in { animation: settle 200ms var(--ease) both; }
+    .row {
+      display:flex; align-items:center; gap:7px;
+      padding:3px 9px; font-size:12px; color:var(--dim);
+      border-radius:var(--r-sm); cursor:default;
+      transition: background 140ms var(--ease), color 140ms var(--ease);
+    }
+    .row:hover { background:var(--bg2); color:var(--fg); }
+    .row.sel { background:var(--bg3); color:var(--fg); }
+    .chip {
+      font-family:var(--data); font-size:10px; color:var(--faint);
+      padding:2px 8px; background:var(--bg2); border-radius:999px;
+    }
+    .navbtn {
+      font-family:var(--data); font-size:10px; color:var(--faint);
+      padding:2px 10px; background:none; border:0; border-radius:999px;
+    }
+    .navbtn.on { background:var(--bg3); color:var(--fg); }
+  </style>
+</helmet>
+
+<div style="width:1240px; height:760px; display:flex; flex-direction:column; background:var(--bg0); overflow:hidden">
+
+  <!-- 38 -> 32px -->
+  <div style="height:32px; flex:none; display:flex; align-items:center; gap:10px; padding:0 12px; background:var(--bg1)">
+    <div style="display:flex; align-items:center; gap:7px">
+      <span style="width:13px;height:13px;background:var(--accent-dim);border-radius:4px;display:inline-flex;align-items:center;justify-content:center;color:#0e1113;font-size:8px">·</span>
+      <span class="data" style="font-size:10px; letter-spacing:.06em; color:var(--dim)">ARC-LABS</span>
+    </div>
+    <div style="display:flex; align-items:center; gap:7px; background:var(--bg2); padding:2px 9px; border-radius:999px">
+      <span style="width:5px;height:5px;border-radius:50%;background:var(--accent)"></span>
+      <span class="data" style="font-size:10px; color:var(--dim)">VAULT ONLINE</span>
+      <span class="data" style="font-size:10px; color:var(--faint)">live-vault</span>
+    </div>
+    <div style="flex:1"></div>
+    <div style="display:flex; gap:2px; background:var(--bg2); padding:2px; border-radius:999px">
+      <button class="navbtn on">home</button><button class="navbtn">search</button><button class="navbtn">graph</button><button class="navbtn">inbox</button>
+    </div>
+    <span class="chip">⌘K</span>
+    <span class="chip" style="display:inline-flex;align-items:center;padding:3px 8px">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6h.09A1.65 1.65 0 0 0 10.6 3.09V3a2 2 0 1 1 4 0v.09A1.65 1.65 0 0 0 16.11 4.6a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 20.4 9v.09A1.65 1.65 0 0 0 21.91 10.6H22a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+    </span>
+  </div>
+
+  <div style="flex:1; display:flex; min-height:0">
+
+    <!-- 260 -> 232px -->
+    <div style="width:232px; flex:none; background:var(--bg1); display:flex; flex-direction:column">
+      <div style="display:flex; align-items:center; padding:8px 12px 4px">
+        <span class="data" style="font-size:10px; color:var(--faint); letter-spacing:.06em">notes</span>
+        <span style="flex:1"></span>
+        <span style="color:var(--faint); font-size:14px">+</span>
+      </div>
+      <div style="padding:2px 7px">
+        <div class="row in" style="animation-delay:15ms"><span style="color:var(--faint)">›</span>ARC</div>
+        <div class="row in" style="animation-delay:35ms"><span style="color:var(--faint)">›</span>Daily</div>
+        <div class="row sel in" style="animation-delay:55ms"><span style="width:7px"></span>Strat1.md</div>
+        <div class="row in" style="animation-delay:75ms"><span style="width:7px"></span>E-Tron service.md</div>
+        <div class="row in" style="animation-delay:95ms"><span style="width:7px"></span>Projects.canvas</div>
+        <div class="row in" style="animation-delay:115ms"><span style="width:7px"></span>Saham.md</div>
+        <div class="row in" style="animation-delay:135ms"><span style="width:7px"></span>Notes/Alpha.md</div>
+        <div class="row in" style="animation-delay:155ms"><span style="width:7px"></span>Notes/Beta.md</div>
+        <div class="row in" style="animation-delay:175ms"><span style="width:7px"></span>Notes/Orphan.md</div>
+      </div>
+    </div>
+
+    <div style="flex:1; min-width:0; display:flex; flex-direction:column; background:var(--bg0)">
+      <div class="in" style="flex:1; overflow:hidden; padding:16px 32px; animation-delay:50ms">
+        <div style="max-width:68ch">
+          <h1 style="margin:0 0 16px; font-size:21px; font-weight:500; letter-spacing:-0.01em; color:var(--fg)">Mister M made this for testing</h1>
+          <p style="margin:0 0 11px; font-size:12px; line-height:1.55; color:var(--fg)">
+            A note in the vault. It links to <a href="#">Notes/Beta</a> and carries the
+            <span class="data" style="font-size:11px; color:var(--accent); background:#16241f; padding:1px 6px; border-radius:999px">#reference</span> tag.
+          </p>
+          <p style="margin:0 0 11px; font-size:12px; line-height:1.55; color:var(--fg)">
+            Type steps down one rung (13→12, 25→21), the pane inset to 16/32, and rows to
+            3px padding. Three more notes fit in the sidebar than above.
+          </p>
+          <div style="border-radius:var(--r); background:var(--bg1); padding:11px 14px; margin:0 0 11px">
+            <div class="data" style="font-size:11px; color:var(--dim); line-height:1.55">fn f(x: u32) -&gt; u32 { x * 2 }</div>
+          </div>
+          <p style="margin:0; font-size:12px; line-height:1.55; color:var(--fg)">
+            The tradeoff is prose comfort: 12px body over long reading is tighter than the
+            13px this app was designed around.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <div class="in" style="width:212px; flex:none; background:var(--bg1); padding:12px 13px; animation-delay:80ms">
+      <div class="data" style="font-size:10px; color:var(--faint); letter-spacing:.06em; margin-bottom:8px">BACKLINKS 1</div>
+      <div style="border-radius:var(--r); background:var(--bg2); padding:8px 11px; margin-bottom:6px">
+        <div style="font-size:12px; color:var(--fg)">E-Tron service</div>
+        <div class="data" style="font-size:10px; color:var(--faint); margin-top:2px">E-Tron service.md</div>
+      </div>
+      <div class="data" style="font-size:10px; color:var(--faint); letter-spacing:.06em; margin:16px 0 8px">LINKS FROM THIS NOTE 1</div>
+      <div style="font-size:11px; color:var(--dim)">Notes/Beta</div>
+    </div>
+
+    <div style="width:20px; flex:none; background:var(--bg1); padding:12px 0; display:flex; flex-direction:column; align-items:center; gap:3px">
+      <span style="width:9px;height:3px;background:var(--human);border-radius:999px"></span>
+      <span style="width:9px;height:3px;background:var(--human);border-radius:999px"></span>
+      <span style="width:9px;height:3px;background:var(--agent);border-radius:999px"></span>
+      <span style="width:9px;height:3px;background:var(--human);border-radius:999px"></span>
+      <span style="width:9px;height:3px;background:var(--human);border-radius:999px"></span>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

@@ -238,10 +238,9 @@
     flex-wrap: wrap;
     font-size: var(--arc-text-xs);
     color: var(--arc-fg-dim);
-    border: 1px solid var(--arc-line);
     border-radius: var(--arc-radius);
     padding: var(--arc-space-2) var(--arc-space-3);
-    background: var(--arc-bg-1);
+    background: var(--arc-bg-2);
   }
   .meter .model {
     color: var(--arc-agent);

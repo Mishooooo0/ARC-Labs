@@ -91,9 +91,15 @@
   --arc-space-7: 48px;
   --arc-space-8: 64px;
 
-  --arc-radius-sm: 3px;
-  --arc-radius: 5px;
-  --arc-radius-lg: 8px;
+  /* 3/5/8 was too sharp — outlined boxes with tight corners read as heavy and
+     brittle. Softening the radius and leaning on surface tone instead of a 1px
+     rule everywhere is what took the weight out, without touching a single
+     colour or type value. */
+  --arc-radius-sm: 8px;
+  --arc-radius: 12px;
+  --arc-radius-lg: 16px;
+  /* For pills: chips, nav segments, tag badges. */
+  --arc-radius-pill: 999px;
 
   /* ── Motion: 120-200ms, ease-out, always interruptible. ───────────────────
    * --arc-motion is a multiplier the user controls; 0 disables animation
@@ -114,6 +120,41 @@
   --arc-z-sticky: 10;
   --arc-z-overlay: 100;
   --arc-z-modal: 1000;
+}
+
+/* ── Compact density ──────────────────────────────────────────────────────
+ * A token swap, exactly like a theme — not a stylesheet fork. Everything below
+ * is a value every component already reads, so nothing has a density branch in
+ * it and nothing can forget to honour this.
+ *
+ * One step down the type ramp, a tighter space scale, a shorter topbar and a
+ * narrower sidebar. Roundness and colour are untouched: this is density alone.
+ *
+ * The tradeoff is stated where the setting lives — 12px body over long reading
+ * is tighter than the 13px this app was designed around, which is why it is a
+ * choice and not the default.
+ */
+:root[data-density="compact"] {
+  --arc-text-xs: 10px;
+  --arc-text-sm: 11px;
+  --arc-text-md: 12px;
+  --arc-text-lg: 14px;
+  --arc-text-xl: 17px;
+  --arc-text-2xl: 21px;
+
+  --arc-leading: 1.55;
+
+  --arc-space-1: 3px;
+  --arc-space-2: 6px;
+  --arc-space-3: 9px;
+  --arc-space-4: 12px;
+  --arc-space-5: 16px;
+  --arc-space-6: 24px;
+  --arc-space-7: 32px;
+  --arc-space-8: 48px;
+
+  --arc-topbar-h: 32px;
+  --arc-sidebar-w: 232px;
 }
 
 /* ── ARC Light ────────────────────────────────────────────────────────────

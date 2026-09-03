@@ -239,3 +239,86 @@ input {
   max-width: 100%;
   border-radius: var(--arc-radius);
 }
+
+/* ── Motion ───────────────────────────────────────────────────────────────
+ * The app had 16 transitions in it and almost all of them were hover colour:
+ * every state change simply appeared. These are the shared primitives that
+ * give it some life without any of it being decorative — each one explains a
+ * change rather than announcing itself.
+ *
+ * All of it multiplies `--arc-motion`, so the Appearance setting's 0 stops
+ * every animation here, and `prefers-reduced-motion` already forces that 0.
+ * That is why the durations are expressed through the duration tokens and
+ * never as literals.
+ */
+
+@keyframes arc-settle {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes arc-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes arc-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* A pane arriving. Used where a whole view replaces another. */
+.arc-settle {
+  animation: arc-settle calc(var(--arc-dur-slow) + 40ms) var(--arc-ease) both;
+}
+
+/* A modal surface arriving over a scrim. */
+.arc-rise {
+  animation: arc-rise calc(var(--arc-dur-slow) + 40ms) var(--arc-ease) both;
+}
+
+.arc-fade {
+  animation: arc-fade var(--arc-dur) var(--arc-ease) both;
+}
+
+/* A list that settles in rather than snapping. The stagger is capped at eight
+   rows: past that it stops reading as one movement and starts reading as a
+   queue, and a 5,000-note tree must never animate 5,000 rows. */
+.arc-stagger > * {
+  animation: arc-settle var(--arc-dur) var(--arc-ease) both;
+}
+.arc-stagger > *:nth-child(1) { animation-delay: calc(var(--arc-motion) * 20ms); }
+.arc-stagger > *:nth-child(2) { animation-delay: calc(var(--arc-motion) * 40ms); }
+.arc-stagger > *:nth-child(3) { animation-delay: calc(var(--arc-motion) * 60ms); }
+.arc-stagger > *:nth-child(4) { animation-delay: calc(var(--arc-motion) * 80ms); }
+.arc-stagger > *:nth-child(5) { animation-delay: calc(var(--arc-motion) * 100ms); }
+.arc-stagger > *:nth-child(6) { animation-delay: calc(var(--arc-motion) * 120ms); }
+.arc-stagger > *:nth-child(7) { animation-delay: calc(var(--arc-motion) * 140ms); }
+.arc-stagger > *:nth-child(8) { animation-delay: calc(var(--arc-motion) * 160ms); }
+.arc-stagger > *:nth-child(n + 9) { animation-delay: calc(var(--arc-motion) * 180ms); }
+
+/* A focus ring that arrives rather than blinking on. Applied globally so a
+   keyboard user gets the same treatment everywhere without each component
+   remembering to add it. */
+:focus-visible {
+  outline: 2px solid var(--arc-accent-dim);
+  outline-offset: 2px;
+  border-radius: var(--arc-radius-sm);
+  transition: outline-color var(--arc-dur-fast) var(--arc-ease);
+}

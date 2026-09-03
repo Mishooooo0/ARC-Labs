@@ -1,0 +1,21 @@
+{
+  "artboards": [
+    { "file": "Current.dc.html",  "x": 0,    "y": 0,   "w": 1240, "h": 760, "title": "A — Current (today)" },
+    { "file": "Main.dc.html",     "x": 1360, "y": 0,   "w": 1240, "h": 760, "title": "B — Softened" },
+    { "file": "Compact.dc.html",  "x": 2720, "y": 0,   "w": 1240, "h": 760, "title": "C — Compact" },
+    { "file": "Settings.dc.html", "x": 1360, "y": 900, "w": 1240, "h": 760, "title": "Settings modal (in B)" }
+  ],
+  "annotations": [
+    { "id": "brief", "x": 0, "y": -190, "w": 620,
+      "text": "Three treatments of the same screen. Colour, type scale and layout are identical across all three — only roundness, border usage, spacing rhythm and motion change.\n\nA is the app exactly as it is today." },
+    { "id": "note-a", "x": 0, "y": 800, "w": 380,
+      "text": "A — Current\n3/5/8px radii. Every container outlined at 1px. Pane inset 24/48, block rhythm 16. Motion: hover colour only, nothing eases." },
+    { "id": "note-b", "x": 1360, "y": 800, "w": 380,
+      "text": "B — Softened  (recommended)\n8/12/16px radii. Outlines give way to raised surfaces. Inset 20/40, rhythm 14. Rows settle in and ease on hover.\n\nSame density of information, noticeably less hard edge." },
+    { "id": "note-c", "x": 2720, "y": 800, "w": 380,
+      "text": "C — Compact\nB's roundness, pushed on density: topbar 38→32, sidebar 260→232, type down a rung (13→12, 25→21). Three more notes visible.\n\nTradeoff: 12px body is tight for long reading." },
+    { "id": "note-s", "x": 2720, "y": 900, "w": 400,
+      "text": "The settings modal, shown in treatment B.\n\nObsidian-shaped: scrim, category rail, pane. It stops taking over the main pane — your note stays visible behind it.\n\nSync is listed but marked, rather than a dead control." }
+  ],
+  "launch": { "view": "canvas" }
+}

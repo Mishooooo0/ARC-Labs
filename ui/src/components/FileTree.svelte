@@ -88,7 +88,9 @@
 </script>
 
 <nav class="tree" aria-label="Vault files">
-  <ul>
+  <!-- Rows settle rather than snapping in. Capped at eight by `.arc-stagger`,
+       so a 5,000-note vault animates the first handful and nothing else. -->
+  <ul class="arc-stagger">
     {#each rows as { entry, depth } (entry.path)}
       <li>
         <button

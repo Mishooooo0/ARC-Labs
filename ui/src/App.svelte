@@ -167,9 +167,22 @@
   let isCanvas = $derived(selected?.toLowerCase().endsWith(".canvas") ?? false);
   let indexReady = $derived(stats !== null);
 
+  /** Density, like the theme, is a token swap on the root element. */
+  let density = $state<"comfortable" | "compact">("comfortable");
+
   $effect(() => {
     document.documentElement.setAttribute("data-theme", theme);
     localStorage.setItem("arc-labs-theme", theme);
+  });
+
+  $effect(() => {
+    // "comfortable" is the absence of the attribute, so the base tokens are the
+    // default rather than one branch of two.
+    if (density === "compact") {
+      document.documentElement.setAttribute("data-density", "compact");
+    } else {
+      document.documentElement.removeAttribute("data-density");
+    }
   });
 
   /**
@@ -277,6 +290,16 @@
       apiVersion = await transport.version();
       status = await transport.status();
       bootError = null;
+      // Read once at boot so a saved density and theme apply immediately,
+      // rather than only after someone opens the settings panel.
+      void transport
+        .config()
+        .then((c) => {
+          config = c;
+          theme = c.ui.theme;
+          density = c.ui.density === "compact" ? "compact" : "comfortable";
+        })
+        .catch(() => {});
       if (!status.vault) {
         tree = null;
         return;
@@ -534,6 +557,7 @@
     configAdjusted = null;
     try {
       config = await transport.config();
+      density = config.ui.density === "compact" ? "compact" : "comfortable";
     } catch (e) {
       error = message(e);
     }
@@ -563,6 +587,7 @@
 
       config = stored;
       theme = stored.ui.theme;
+      density = stored.ui.density === "compact" ? "compact" : "comfortable";
       // Motion is a CSS token, so a change has to reach the document.
       document.documentElement.style.setProperty("--arc-motion", String(stored.ui.motion));
     } catch (e) {
@@ -1017,7 +1042,10 @@
         {/if}
       </aside>
 
-      <main class="pane">
+      <!-- `view` as the key so the pane replays its entrance on every view
+           change: a swap that just appears is what read as dead. -->
+      {#key view}
+        <main class="pane arc-settle">
         <!-- One banner. The Phase 1 save guard and the live-change notice are
              two mechanisms reporting the same event, and showing both stacked
              says it twice and reads as two separate problems. Whichever fires
@@ -1202,7 +1230,8 @@
             onclose={() => selectEntry(null)}
           />
         {/if}
-      </main>
+        </main>
+      {/key}
 
       {#if showTimeline && view === "note" && selected && !isCanvas && timeline.length}
         <Timeline
@@ -1375,15 +1404,20 @@
 
   .views {
     display: flex;
-    gap: 1px;
-    border: 1px solid var(--arc-line);
-    border-radius: var(--arc-radius-sm);
-    overflow: hidden;
+    gap: 2px;
+    /* A held surface rather than an outlined box — the segments read as one
+       control without a rule drawing a rectangle around them. */
+    background: var(--arc-bg-2);
+    padding: 2px;
+    border-radius: var(--arc-radius-pill);
   }
   .views button {
-    padding: 2px var(--arc-space-3);
+    padding: 3px var(--arc-space-3);
     color: var(--arc-fg-faint);
-    transition: color var(--arc-dur-fast) var(--arc-ease);
+    border-radius: var(--arc-radius-pill);
+    transition:
+      color var(--arc-dur-fast) var(--arc-ease),
+      background var(--arc-dur-fast) var(--arc-ease);
   }
   .views button:hover {
     color: var(--arc-fg-dim);
@@ -1406,20 +1440,21 @@
 
   .chip {
     color: var(--arc-fg-faint);
-    padding: 2px var(--arc-space-2);
-    border: 1px solid var(--arc-line);
-    border-radius: var(--arc-radius-sm);
+    padding: 3px var(--arc-space-3);
+    background: var(--arc-bg-2);
+    border: 0;
+    border-radius: var(--arc-radius-pill);
     transition:
       color var(--arc-dur-fast) var(--arc-ease),
-      border-color var(--arc-dur-fast) var(--arc-ease);
+      background var(--arc-dur-fast) var(--arc-ease);
   }
   .chip:hover {
     color: var(--arc-fg-dim);
-    border-color: var(--arc-line-strong);
+    background: var(--arc-bg-3);
   }
   .chip.active {
     color: var(--arc-accent);
-    border-color: var(--arc-accent-dim);
+    background: var(--arc-accent-wash);
   }
 
   .body {
