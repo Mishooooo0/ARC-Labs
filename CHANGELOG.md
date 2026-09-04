@@ -88,10 +88,19 @@ component imports `@tauri-apps/api`.
 
   Unsigned. Windows SmartScreen will warn on both until they are code-signed,
   which needs a certificate nobody has bought yet.
-- **Nothing has been installed on a clean machine.** The installers build and
-  the app runs from the build tree; neither package has been put on a Windows
-  machine with no developer toolchain, which is what Phase 7's gate actually
-  asks for. Until that happens "it installs" is untested.
+- **The NSIS installer has been run, and works.** Silent install
+  (`ARC-LABS_0.0.1_x64-setup.exe /S`) lands in
+  `%LOCALAPPDATA%\ARC-LABS`, creates a desktop shortcut and a Start Menu
+  shortcut, registers an uninstall entry under Programs and Features, and the
+  installed binary runs: vault open, index built, Weave enabled, companion API
+  on 127.0.0.1:7777. It installs **per user** — `RequestExecutionLevel user` —
+  so it never prompts for admin and touches nothing outside the profile.
+- **It has not been installed on a *clean* machine.** That run was on the
+  machine that built it, which has the whole toolchain. Phase 7's gate asks for
+  a Windows box with no developer tools, and that is still untested — what is
+  now known is that the installer itself is not broken.
+- **Neither installer is code-signed.** SmartScreen will warn on both until
+  someone buys a certificate.
 - **Weave's default threshold (0.82) is conservative.** On a small real vault the
   strongest genuine pair scored 0.759, so the default suggests nothing. Lower it
   in `[weave]` if you want the inbox to have opinions.
