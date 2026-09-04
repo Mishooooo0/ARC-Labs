@@ -28,10 +28,18 @@ On top of that, the parts that make it not a clone:
 
 | | Status |
 |---|---|
-| Windows desktop (Tauri / WebView2) | works, built and used |
+| Windows desktop (Tauri / WebView2) | **builds, installs, runs** — MSI and NSIS produced |
 | Headless server → browser | works, built and used |
-| Linux desktop (webkit2gtk) | **never built** — no toolchain on the build machine |
+| Linux headless (x86-64 ELF) | **builds and runs** — 397 tests pass on Ubuntu 24.04 |
+| Linux desktop (webkit2gtk) | **still never built** — blocked on system packages |
 | Docker image | **builds and runs** — healthy, vault open, token enforced |
+
+The Linux headless binary was built and exercised on Ubuntu 24.04 under WSL:
+handshake, `/healthz`, tree, note read, note **create**, the ledger entry that
+create produced, the JSON 404 for an unknown endpoint, and the UI bundle served.
+The whole suite runs there — **397 passed, 0 failed, the same count as on
+Windows**, so the two platforms are not merely both green but running the same
+set of tests.
 
 One engine underneath all four: `arc-labs-api` defines every operation once, and
 `ui/src/lib/transport.ts` picks Tauri `invoke()` or `fetch` at runtime. No UI
@@ -53,8 +61,12 @@ component imports `@tauri-apps/api`.
 
 ### Known gaps
 
-- **Linux artifacts do not exist.** `.AppImage` and `.deb` are unbuilt and
-  untested.
+- **Linux desktop artifacts do not exist.** `.AppImage` and `.deb` are unbuilt.
+  The build stops before it reaches Tauri at all: `libdbus-sys` cannot find
+  `pkg-config`, and `webkit2gtk-4.1` is missing behind it. Both are system
+  packages, so this needs one `sudo apt install` on the build machine and
+  nothing else — the Rust side already compiles there, as the headless binary
+  proves.
 - **The Docker image builds and runs.** It comes up healthy, opens a bind-mounted
   vault, enforces its token and serves the hub endpoints. Two things it revealed:
   the compose file mounted the vault read-only, five phases after that stopped
@@ -63,8 +75,23 @@ component imports `@tauri-apps/api`.
 - **The container has not been exercised over MCP.** The rest of the Phase 6
   gate is verified against the same binary outside a container; that half is
   still untested inside one.
-- **No installer.** There is no MSI or NSIS package yet, and nothing has been
-  tested on a clean machine with no developer toolchain.
+- **Windows installers exist now.** `tauri build` produces
+  `ARC-LABS_0.0.1_x64_en-US.msi` (7.6 MB) and `ARC-LABS_0.0.1_x64-setup.exe`
+  (5.6 MB), and the built `arc-labs-app.exe` runs: it opens a vault, reports
+  `shell: desktop` with the folder-picker capability, and serves its companion
+  API to a browser on 127.0.0.1:7777.
+
+  ```
+  0600695f74083cf157297eed51114f2d3934db7844632feb8edbf07c0373e058  ARC-LABS_0.0.1_x64_en-US.msi
+  873af97e4aa1c6926b3cc292d28fb5eb6f58538342fb9eef051ae6131ed71b88  ARC-LABS_0.0.1_x64-setup.exe
+  ```
+
+  Unsigned. Windows SmartScreen will warn on both until they are code-signed,
+  which needs a certificate nobody has bought yet.
+- **Nothing has been installed on a clean machine.** The installers build and
+  the app runs from the build tree; neither package has been put on a Windows
+  machine with no developer toolchain, which is what Phase 7's gate actually
+  asks for. Until that happens "it installs" is untested.
 - **Weave's default threshold (0.82) is conservative.** On a small real vault the
   strongest genuine pair scored 0.759, so the default suggests nothing. Lower it
   in `[weave]` if you want the inbox to have opinions.

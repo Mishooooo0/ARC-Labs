@@ -22,10 +22,13 @@ would choose it, and neither costs you the ability to walk away with your files.
 it, run a canvas, reach it over MCP, and sync it to a vault server you host.
 Phase 7 — installers and a published image — is not done.
 
-**What is actually verified, and what is not.** Windows desktop and the headless
-server are built and used daily. The Docker image builds and runs. **The Linux
-desktop build has never been produced** — the toolchain is not on the machine
-this was written on — and there is **no installer** for any platform. The
+**What is actually verified, and what is not.** Windows desktop builds, packages
+into an MSI and an NSIS installer, and runs. The headless server builds and runs
+on Windows **and on Linux**, with the same 397 tests passing on both. The Docker
+image builds and runs. **The Linux desktop build has never been produced** — it
+needs `pkg-config`, `libdbus-1-dev` and `webkit2gtk-4.1`, none of which are on
+the build machine — and **nothing has been installed on a clean machine**, which
+is what Phase 7 actually asks for. The
 [CHANGELOG](CHANGELOG.md) is the honest ledger for this and is worth reading
 before you trust the table below. A product that asks you to keep observed and
 inferred apart should not blur them in its own README.
@@ -38,14 +41,19 @@ One engine, four shells. Pick the row that matches where you are.
 
 | | Command | Needs | State |
 |---|---|---|---|
-| **Windows desktop** | `arc-labs-app` | WebView2 (ships with Windows 11) | built, used daily |
+| **Windows desktop** | `arc-labs-app` | WebView2 (ships with Windows 11) | built, installed, run |
 | **Linux desktop** | `arc-labs-app` | `webkit2gtk-4.1` — run `arc-labs setup` | **never built** |
-| **Linux headless** | `arc-labs serve --vault ~/notes` | a browser, somewhere | built, used daily |
+| **Linux headless** | `arc-labs serve --vault ~/notes` | a browser, somewhere | built and run on Ubuntu 24.04 |
 | **Docker** | `docker run --user "$(id -u):$(id -g)" -v ~/notes:/vault -p 7777:7777 arc-labs` | nothing | builds and runs |
 
-The last column is the point. Three of these have been run; one has been
-written and never compiled. Saying so costs nothing and is the difference
-between a table and a claim.
+The last column is the point. Three of these have been built and exercised on
+the platform they claim; one has been written and never compiled, because it
+needs system packages the build machine does not have. Saying which is which
+costs nothing and is the difference between a table and a claim.
+
+The two that share a codebase also share a result: the workspace suite is
+**397 passed, 0 failed on both Windows and Linux** — the same count, so they are
+running the same tests rather than each skipping a different set.
 
 The `--user` is not optional on Linux. The image runs as uid 10001, a
 bind-mounted vault belongs to whoever made it, and a mismatch means the
