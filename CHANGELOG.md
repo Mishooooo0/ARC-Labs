@@ -82,8 +82,8 @@ component imports `@tauri-apps/api`.
   API to a browser on 127.0.0.1:7777.
 
   ```
-  0600695f74083cf157297eed51114f2d3934db7844632feb8edbf07c0373e058  ARC-LABS_0.0.1_x64_en-US.msi
-  873af97e4aa1c6926b3cc292d28fb5eb6f58538342fb9eef051ae6131ed71b88  ARC-LABS_0.0.1_x64-setup.exe
+  7abfe79c9a9b48d171bd24ac54083bd3c0ebb1f79fe900eabdfabc9da1d39f99  ARC-LABS_0.0.1_x64_en-US.msi
+  fb29ab1f5a2c154eda195450559137fa44bedea73ffdd614b0d79791ee480965  ARC-LABS_0.0.1_x64-setup.exe
   ```
 
   Unsigned. Windows SmartScreen will warn on both until they are code-signed,
