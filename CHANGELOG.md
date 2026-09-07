@@ -52,6 +52,40 @@ The column packing added one commit earlier is gone. It existed because one plan
 per folder stacked vertically made a thin strip in a wide window; a carcass with
 a real interior width is portrait on its own. `bays` is replaced by `finish`.
 
+### The desktop app carries it
+
+Rebuilt and installed, so the Windows app is no longer four commits behind the
+repository — it predated the Emerald & Patina logo as well as the whole
+library. `ARC-LABS_0.0.1_x64-setup.exe`, 6.4 MB, installed per user into
+`%LOCALAPPDATA%\ARC-LABS`; both shortcuts and the uninstall entry updated.
+
+```
+d1c63fc434c34256cc4d67a344d483be0d9b5681107c214b766ffb7fb04bf4b5  ARC-LABS_0.0.1_x64-setup.exe
+11e6b57451f829171eda9a00c09b96ef6b33e2090f0abbf5eca568d70b5c8b38  ARC-LABS_0.0.1_x64_en-US.msi
+```
+
+The installed binary embeds exactly `index-DoLJLjjz.js`, `Library-C_YeTMA2.js`
+and `Library-Bgeke2oM.css` and no stale asset. Those names are content hashes,
+which is what makes them proof rather than a timestamp.
+
+The desktop shell's CSP is `script-src 'self'` with no `worker-src`, the same as
+the server's — so the DOM-label decision was forced here too, not only in a
+browser. Worth knowing before anyone tries to "simplify" it back to 3D text.
+
+**Two things this build did not settle.**
+
+*The version is still 0.0.1*, the same as the build it replaced, so nothing on
+the machine distinguishes them. Cutting 0.0.2 is a release decision and has not
+been made.
+
+*`--bundles all` fails on this machine* with `failed to bundle project: Access is
+denied. (os error 5)`. WiX itself succeeds — the MSI is written to
+`target/release/wix/x64/output.msi` — and the failure is the copy to its final
+name, where the previous MSI cannot be opened for writing or deleted even by its
+owner with FullControl. That is a filter-driver or pending-delete hold rather
+than a permission, and `target/` sitting inside the OneDrive root is the likeliest
+cause. `--bundles nsis` is unaffected, and NSIS is what installs this app.
+
 ### The graph became a library
 
 The force-directed graph is gone. Folders are shelves, notes are books standing
