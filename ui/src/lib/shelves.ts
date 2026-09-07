@@ -128,7 +128,13 @@ export const DEFAULT_LAYOUT: LayoutOptions = {
 // ── The furniture, in layout units ──────────────────────────────────────────
 /** How far a nested folder's books and name step in from the interior edge. */
 export const INDENT = 34;
-const BOOK_H = 76;
+/**
+ * A book's height, and the yardstick for the case's depth.
+ *
+ * Books are the one object here whose real-world size everybody knows, so the
+ * carcass is proportioned against them rather than against itself.
+ */
+export const BOOK_H = 76;
 const BOOK_GAP = 3;
 /** Clear height of one compartment. Books take `BOOK_H`; the rest is headroom. */
 const BAY_H = 110;

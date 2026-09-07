@@ -14,25 +14,34 @@
  */
 
 import type { Board, Book, Bookcase, Compartment, Layout } from "./shelves";
-import { CASE_SIDE, CASE_TOP, BOARD_T, OVERHANG, PLINTH } from "./shelves";
+import { BOOK_H, CASE_SIDE, CASE_TOP, BOARD_T, OVERHANG, PLINTH } from "./shelves";
 
 /** Layout units per world unit. A book ends up roughly 0.7 units tall. */
 export const SCALE = 100;
 
 /**
- * How deep the carcass is, front to back. Constant: depth is not data.
+ * How deep the carcass is, and how deep a book is — both measured in books.
  *
- * Half again what it was. At 0.34 the case read as a facade — a flat panel with
- * boards drawn on it — because there was barely enough side to catch the light
- * when you turned it. The books scale with it rather than staying put, so they
- * still fill a little under half the depth, which is what books do on a real
- * shelf: proud of nothing, with air behind them.
+ * Guessing multipliers got this wrong twice. 0.34 was a facade; 1.5× that was
+ * 0.51, still only two-thirds of a book-height deep, and still read flat. The
+ * mistake was scaling a number rather than asking what the number should *be*.
+ *
+ * A book is the one object here whose real size everyone knows. A hardback is
+ * roughly 24 cm tall and 16 cm front to back, and it stands on a shelf about
+ * 30 cm deep — so a shelf is about 1.25 book-heights deep and a book about
+ * 0.7. Those two ratios are the whole of it, and they are what these are now,
+ * which is why the case finally has a side worth lighting.
+ *
+ * That the case is a *tenth* as deep as it is wide is not a contradiction: at
+ * this scale it is a two-metre wall unit, and a two-metre bookcase is still
+ * only thirty centimetres deep.
  */
-export const CASE_DEPTH = 0.51;
+const BOOK_HEIGHT = BOOK_H / SCALE;
+export const CASE_DEPTH = BOOK_HEIGHT * 1.25;
 /** The back panel, which is thin and is what stops you reaching in from behind. */
 export const BACK_T = 0.022;
 /** How far a book sticks out. Less than the case, so books sit *inside* it. */
-export const BOOK_DEPTH = 0.24;
+export const BOOK_DEPTH = BOOK_HEIGHT * 0.7;
 /** A book's front face sits this far behind the case's front edge. */
 const RECESS = 0.03;
 
@@ -79,6 +88,19 @@ export interface ScreenLabel {
    * you are not.
    */
   angle: number;
+  /**
+   * Type size in pixels, for a spine only.
+   *
+   * Off the type scale on purpose, and the one place in the app that is. A
+   * spine's width on screen changes continuously with distance and angle, and a
+   * six-step scale cannot follow that: pick a fixed size and the name either
+   * overflows a thin book onto its neighbours or rattles around inside a fat
+   * one. Sizing the type to the spine is also what lets a *thin* book be named
+   * at all — the version before this simply refused to draw a title narrower
+   * than 11px, so a zero-byte note, which gets the minimum spine width, never
+   * had a name.
+   */
+  size?: number;
 }
 
 export interface Box {

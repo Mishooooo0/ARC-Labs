@@ -318,7 +318,7 @@
         {#if l.kind === "spine"}
           <span
             class="spine"
-            style="left:{l.x}px; top:{l.y}px; width:{l.len}px; --a:{l.angle}deg"
+            style="left:{l.x}px; top:{l.y}px; width:{l.len}px; --a:{l.angle}deg; font-size:{l.size}px"
           >{l.text}</span>
         {:else}
           <span
@@ -434,9 +434,14 @@
     on-screen length, so a title too long for the book is clipped rather than
     spilling across its neighbours.
   */
+  /*
+    The one type size in the app that is not from the scale, set inline from the
+    spine's measured width. A book's on-screen width changes continuously with
+    distance and angle; a stepped scale cannot follow that, and a fixed size
+    meant thin books went unnamed entirely.
+  */
   .spine {
     color: var(--ink);
-    font-size: var(--arc-text-xs);
     line-height: 1;
     text-align: center;
     transform: translate(-50%, -50%) rotate(var(--a));

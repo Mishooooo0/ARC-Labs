@@ -449,13 +449,17 @@
         const len = Math.hypot(dx, dy);
         if (len < 26) continue;
 
-        // And the spine has to be thick enough to hold a line of text across
-        // it, or the title sits on the two books either side of the one it
-        // names.
+        // The type is sized to the spine rather than the spine being required to
+        // fit the type. A fixed size meant a thin book was simply not named:
+        // a zero-byte note takes the minimum spine width, so it never cleared
+        // the old 11px bar and stood there blank.
         const pose = bookPose(at.book);
         const side = project(pose.x + pose.w / 2, pose.y, pose.z + pose.d / 2 + at.dz);
         const mid = project(pose.x, pose.y, pose.z + pose.d / 2 + at.dz);
-        if (!side || !mid || Math.hypot(side.x - mid.x, side.y - mid.y) * 2 < 11) continue;
+        if (!side || !mid) continue;
+        const across = Math.hypot(side.x - mid.x, side.y - mid.y) * 2;
+        // Below this the glyphs are a smudge whatever size they are set at.
+        if (across < 4) continue;
 
         out.push({
           key: `b:${b.path}`,
@@ -467,6 +471,9 @@
           // Text reads from the foot upward, so the angle is that of the
           // foot→head vector turned into screen degrees.
           angle: (Math.atan2(dy, dx) * 180) / Math.PI,
+          // Most of the spine's width, so it sits on the book rather than over
+          // its neighbours, and never so small it is not worth drawing.
+          size: Math.max(6, Math.min(14, across * 0.74)),
         });
       }
     }

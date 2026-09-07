@@ -32,7 +32,8 @@ export interface Finish {
   /** Front edges, where the light lands. */
   edge: string;
   /**
-   * The six book cloths. A note takes one by a hash of its path.
+   * The eight book cloths — bone, linen, sage, clay, slate, heather, moss,
+   * ochre. A note takes one by a hash of its path.
    *
    * All low-saturation, and that is load-bearing rather than taste: the two
    * reserved authorship hues are a *saturated* amber and a saturated blue, and
@@ -79,7 +80,7 @@ export function readFinish(el: HTMLElement, name: FinishName): Finish {
     board: get("board"),
     back: get("back"),
     edge: get("edge"),
-    spines: [1, 2, 3, 4, 5, 6].map((i) => get(`spine-${i}`)),
+    spines: [1, 2, 3, 4, 5, 6, 7, 8].map((i) => get(`spine-${i}`)),
     canvas: get("canvas"),
     label: get("label"),
     ink: get("ink"),
