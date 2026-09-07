@@ -60,17 +60,29 @@ library. `ARC-LABS_0.0.1_x64-setup.exe`, 6.4 MB, installed per user into
 `%LOCALAPPDATA%\ARC-LABS`; both shortcuts and the uninstall entry updated.
 
 ```
-d1c63fc434c34256cc4d67a344d483be0d9b5681107c214b766ffb7fb04bf4b5  ARC-LABS_0.0.1_x64-setup.exe
-11e6b57451f829171eda9a00c09b96ef6b33e2090f0abbf5eca568d70b5c8b38  ARC-LABS_0.0.1_x64_en-US.msi
+3cfdeb7506f25ab492279e7e48066d97f7a4428db23abd5467f6fdec85cd4fe2  ARC-LABS_0.0.1_x64-setup.exe
 ```
 
-The installed binary embeds exactly `index-DoLJLjjz.js`, `Library-C_YeTMA2.js`
-and `Library-Bgeke2oM.css` and no stale asset. Those names are content hashes,
+The installed binary embeds exactly `index-BvVyoSBh.js`, `Library-f0rsBjCy.js`
+and their two stylesheets, and no stale asset. Those names are content hashes,
 which is what makes them proof rather than a timestamp.
+
+The MSI at `target/release/wix/x64/output.msi` is **older than this** — it comes
+from the run before the empty-vault fix below, and was not rebuilt. Use the NSIS
+installer, which is what installs this app anyway.
 
 The desktop shell's CSP is `script-src 'self'` with no `worker-src`, the same as
 the server's — so the DOM-label decision was forced here too, not only in a
 browser. Worth knowing before anyone tries to "simplify" it back to 3D text.
+
+**An empty vault drew a white cube.** Found by pointing the app at one: an
+`InstancedMesh` starts every instance at the identity matrix — a 1×1×1 box at
+the world origin — and the mesh is allocated with at least one instance so a
+count of zero is never asked for. With no notes the write loop never runs, so
+that instance kept its default box, sitting exactly where the origin is: the
+top-left corner of the case. Every vault built against had notes in it, so
+nothing ever touched it. Unused instances are now collapsed, which also removes
+the ghost frame after a note is deleted.
 
 **Two things this build did not settle.**
 
