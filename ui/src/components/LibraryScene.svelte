@@ -254,6 +254,26 @@
       m.setColorAt(i, colour.set(colourOf(b)));
     }
 
+    /*
+      Collapse every instance the layout does not use.
+
+      `InstancedMesh` starts each instance at the *identity* matrix — a 1×1×1
+      box at the world origin — and the mesh is allocated with at least one
+      instance so that a count of zero is never asked for. A vault with no notes
+      therefore drew a white unit cube at the top-left corner of an otherwise
+      empty case, which is precisely where the origin is. Every vault tested
+      before this one had notes in it, so nothing ever touched that instance.
+
+      It also covers the frame after a note is deleted, where the mesh can still
+      be the older, larger one while `books` has already shrunk — without this,
+      that frame shows a ghost of the note that just went.
+    */
+    dummy.position.set(0, 0, 0);
+    dummy.rotation.set(0, 0, 0);
+    dummy.scale.set(0, 0, 0);
+    dummy.updateMatrix();
+    for (let i = books.length; i < m.count; i++) m.setMatrixAt(i, dummy.matrix);
+
     m.instanceMatrix.needsUpdate = true;
     if (m.instanceColor) m.instanceColor.needsUpdate = true;
     // Raycasting rejects against this first, so a stale one makes books
