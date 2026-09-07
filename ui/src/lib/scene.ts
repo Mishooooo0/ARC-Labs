@@ -1,29 +1,43 @@
 /**
  * The bridge between the flat layout and the 3D scene.
  *
- * `shelves.ts` lays the library out in screen-like units with y increasing
+ * `shelves.ts` lays the bookcase out in screen-like units with y increasing
  * *downward*, because that is how a 2D layout reads and how it is tested.
  * Three.js has y increasing *upward* and works in world units. Everything that
  * converts between the two lives here rather than being scattered through the
  * scene, so there is exactly one place where a sign can be wrong.
  *
  * Kept pure and separate from the component for the same reason the layout is:
- * a camera that frames the wrong thing, or a book that sits through its plank
+ * a camera that frames the wrong thing, or a book that sits through its board
  * instead of on it, is a value that can be asserted rather than a picture
  * someone has to squint at.
  */
 
-import type { Book, Layout, Shelf } from "./shelves";
+import type { Board, Book, Bookcase, Compartment, Layout } from "./shelves";
+import { CASE_SIDE, CASE_TOP, BOARD_T, OVERHANG, PLINTH } from "./shelves";
 
 /** Layout units per world unit. A book ends up roughly 0.7 units tall. */
 export const SCALE = 100;
 
-/** How far a book sticks out of the shelf. Constant: depth is not data. */
+/** How deep the carcass is, front to back. Constant: depth is not data. */
+export const CASE_DEPTH = 0.34;
+/** The back panel, which is thin and is what stops you reaching in from behind. */
+export const BACK_T = 0.022;
+/** How far a book sticks out. Less than the case, so books sit *inside* it. */
 export const BOOK_DEPTH = 0.16;
+/** A book's front face sits this far behind the case's front edge. */
+const RECESS = 0.03;
 
-/** The plank, in world units. */
-export const PLANK_DEPTH = BOOK_DEPTH * 1.55;
-export const PLANK_THICK = 0.022;
+/** The z every book — and the plane a dragged book slides along — lives at. */
+export const BOOK_Z = CASE_DEPTH / 2 - RECESS - BOOK_DEPTH / 2;
+
+/**
+ * Everything but the back panel stops short of the rear, so the back reads as a
+ * separate panel let into the carcass rather than the sides being solid to the
+ * wall. Cabinetry does the same thing, for the same reason.
+ */
+const BODY_DEPTH = CASE_DEPTH - BACK_T;
+const BODY_Z = BACK_T / 2;
 
 /**
  * A label drawn over the canvas rather than inside it, in screen pixels.
@@ -43,11 +57,20 @@ export interface ScreenLabel {
   x: number;
   y: number;
   /**
-   * Room available along the text's own direction, in pixels: the plank's width
-   * for a shelf, the book's on-screen height for a spine. Perspective means that
-   * changes as you move, so it is measured per frame rather than assumed.
+   * Room available along the text's own direction, in pixels: the board's width
+   * for a shelf, the book's on-screen length for a spine. Perspective means
+   * that changes as you move, so it is measured per frame rather than assumed.
    */
   len: number;
+  /**
+   * Degrees to rotate the text, clockwise from horizontal.
+   *
+   * Zero for a shelf name. For a spine it follows the book's *projected* long
+   * axis, which is only straight up the screen when you are looking at the case
+   * head-on — the whole point of being able to walk around it is that usually
+   * you are not.
+   */
+  angle: number;
 }
 
 export interface Box {
@@ -59,88 +82,141 @@ export interface Box {
   d: number;
 }
 
-/**
- * Where a book's *centre* sits in the world.
- *
- * Three.js positions a box by its centre, while the layout positions a book by
- * its top-left corner — so both axes shift by half the size, and y flips. Every
- * one of those is a chance to put a book half a shelf out of place, which is
- * why this is one function with a test rather than arithmetic inlined at three
- * call sites.
- */
-export function bookBox(b: Book): Box {
+/** A layout rectangle as a world-space box at a given depth. */
+function box(x: number, y: number, w: number, h: number, z: number, d: number): Box {
   return {
-    x: (b.x + b.w / 2) / SCALE,
-    y: -(b.y + b.h / 2) / SCALE,
-    z: 0,
+    x: (x + w / 2) / SCALE,
+    y: -(y + h / 2) / SCALE,
+    z,
+    w: w / SCALE,
+    h: h / SCALE,
+    d,
+  };
+}
+
+/**
+ * The carcass: two sides, a top, a back and a plinth.
+ *
+ * This is what the previous version did not have. It drew a plank per folder
+ * with a stub upright at the left end of each — every board its own object,
+ * nothing enclosing anything. A bookcase is a box first; the boards are what
+ * goes *in* it.
+ */
+export function caseParts(c: Bookcase): {
+  left: Box;
+  right: Box;
+  top: Box;
+  back: Box;
+  plinth: Box;
+} {
+  return {
+    left: box(c.x, CASE_TOP, CASE_SIDE, c.floorY - CASE_TOP, BODY_Z, BODY_DEPTH),
+    right: box(
+      c.x + c.w - CASE_SIDE,
+      CASE_TOP,
+      CASE_SIDE,
+      c.floorY - CASE_TOP,
+      BODY_Z,
+      BODY_DEPTH,
+    ),
+    // Wider than the case and a touch deeper: the lip that reads as a cap
+    // rather than as the top of a box.
+    top: box(c.x - OVERHANG, c.y, c.w + OVERHANG * 2, CASE_TOP, BODY_Z + 0.008, BODY_DEPTH + 0.02),
+    back: box(c.x, c.y, c.w, c.h, -CASE_DEPTH / 2 + BACK_T / 2, BACK_T),
+    plinth: box(c.x, c.floorY, c.w, PLINTH, BODY_Z, BODY_DEPTH),
+  };
+}
+
+/** One interior board, spanning the full interior width. */
+export function boardBox(b: Board): Box {
+  return box(b.x, b.y, b.w, BOARD_T, BODY_Z, BODY_DEPTH);
+}
+
+/**
+ * Where a book's *centre* sits in the world, and how far it leans.
+ *
+ * Three.js positions a box by its centre while the layout positions a book by
+ * its top-left corner, so both axes shift by half the size and y flips. A
+ * leaning book adds one more thing to get wrong: it pivots about its *foot*,
+ * not its centre, so the centre swings out along the tilted axis. Every one of
+ * those is a chance to put a book half a shelf out of place, which is why this
+ * is one function with a test rather than arithmetic inlined at three call
+ * sites.
+ */
+export function bookPose(b: Book): { x: number; y: number; z: number; w: number; h: number; d: number; lean: number } {
+  const footX = (b.x + b.w / 2) / SCALE;
+  const footY = -(b.y + b.h) / SCALE;
+  const h = b.h / SCALE;
+
+  // The centre is half a book up the book's own axis, which the lean rotates.
+  return {
+    x: footX - Math.sin(b.lean) * (h / 2),
+    y: footY + Math.cos(b.lean) * (h / 2),
+    z: BOOK_Z,
     w: b.w / SCALE,
-    h: b.h / SCALE,
+    h,
     d: BOOK_DEPTH,
-  };
-}
-
-/** Where a plank sits: directly under the row of books standing on it. */
-export function plankBox(shelf: Shelf, plankY: number): Box {
-  const w = Math.max(shelf.w, 40) / SCALE;
-  return {
-    x: (shelf.x + Math.max(shelf.w, 40) / 2) / SCALE,
-    y: -plankY / SCALE - PLANK_THICK / 2,
-    z: 0,
-    w,
-    h: PLANK_THICK,
-    d: PLANK_DEPTH,
-  };
-}
-
-/** The upright at the left end of a bay, which is what makes it read as a bay. */
-export function endBox(shelf: Shelf): Box {
-  const top = -shelf.y / SCALE;
-  const bottom = -(shelf.y + shelf.h) / SCALE - PLANK_THICK;
-  return {
-    x: shelf.x / SCALE - PLANK_THICK,
-    y: (top + bottom) / 2,
-    z: 0,
-    w: PLANK_THICK * 1.6,
-    h: Math.abs(top - bottom),
-    d: PLANK_DEPTH,
+    lean: b.lean,
   };
 }
 
 /**
- * Where a shelf's label goes: on its own plank, at the left end.
+ * The two ends of a book's spine, in world space: where it meets its surface
+ * and where its head is.
  *
- * The flat version put the folder name at the *top* of its bay while the plank
- * was at the bottom, so every label sat directly under the previous shelf's
- * plank and read as a caption for the books above it rather than a heading for
- * the ones below. On a real shelf the label is on the plank the books stand on.
+ * The spine label is drawn along the line between them, so it stays on the book
+ * at any camera angle and at any lean.
  */
-export function labelPoint(shelf: Shelf): { x: number; y: number; z: number } {
-  const lowest = shelf.planks[shelf.planks.length - 1] ?? shelf.y + shelf.h;
+export function spineEnds(b: Book): { foot: [number, number, number]; head: [number, number, number] } {
+  const footX = (b.x + b.w / 2) / SCALE;
+  const footY = -(b.y + b.h) / SCALE;
+  const h = b.h / SCALE;
+  const z = BOOK_Z + BOOK_DEPTH / 2;
   return {
-    x: shelf.x / SCALE,
-    y: -lowest / SCALE - PLANK_THICK - 0.055,
-    z: PLANK_DEPTH / 2,
+    foot: [footX, footY, z],
+    head: [footX - Math.sin(b.lean) * h, footY + Math.cos(b.lean) * h, z],
+  };
+}
+
+/**
+ * Where a compartment's name goes: on the front edge of its own surface, at the
+ * left end.
+ *
+ * On its *own* surface, which is the fix for the thing the flat version got
+ * wrong — it put the folder name at the top of its bay while the board was at
+ * the bottom, so every name sat directly under the previous shelf's board and
+ * read as a caption for the books above it rather than a heading for the ones
+ * below. On a real shelf the label is on the board the books stand on.
+ */
+export function labelPoint(c: Compartment): { x: number; y: number; z: number } {
+  return {
+    x: c.x / SCALE,
+    y: -c.surfaceY / SCALE - 0.012,
+    z: CASE_DEPTH / 2,
   };
 }
 
 /**
  * A world point, back in layout coordinates.
  *
- * The inverse of what `bookBox` does to a position, and the reason drag works:
+ * The inverse of what `bookPose` does to a position, and the reason drag works:
  * the pointer is raycast onto the wall plane, and the hit has to become an
- * `{x, y}` the layout's own `shelfAt` understands. Round-trips exactly, which
- * is asserted — a sign error here would mean books dropping onto the shelf
- * above or below the one under the cursor.
+ * `{x, y}` the layout's own `compartmentAt` understands. Round-trips exactly,
+ * which is asserted — a sign error here would mean books dropping onto the
+ * shelf above or below the one under the cursor.
+ *
+ * Unaffected by rotating the view: the layout plane is fixed in the world and
+ * the camera is what moves, so this stays correct from any angle.
  */
 export function layoutPoint(worldX: number, worldY: number): { x: number; y: number } {
   return { x: worldX * SCALE, y: -worldY * SCALE };
 }
 
 /**
- * A camera position that frames the whole library.
+ * A camera position that frames the whole bookcase.
  *
- * Fits the taller of the two axes against the viewport, so a wide flat vault
- * and a deep narrow one both arrive on screen whole rather than one of them
+ * Fits the taller of the two axes against the viewport, so a wide squat case
+ * and a tall narrow one both arrive on screen whole rather than one of them
  * starting off the edge.
  */
 export function framing(
@@ -160,13 +236,13 @@ export function framing(
     x: w / 2,
     y: -h / 2,
     /*
-      Margin, and never so close that the near plane clips the books.
+      Margin, and never so close that the near plane clips the case.
 
-      A fifth rather than a tenth: the shelf labels hang below their planks and
+      A fifth rather than a tenth: the shelf names hang below their boards and
       the HUD chips sit in the corners, so a case fitted tight to the window
-      puts the bottom-left folder's name underneath the legend. The margin is
-      cheaper than arranging the two never to meet, and the case reads better
-      with air around it anyway.
+      puts the bottom folder's name underneath the legend. The margin is cheaper
+      than arranging the two never to meet, and the case reads better with air
+      around it anyway.
     */
     z: Math.max(1.2, Math.max(forH, forW) * 1.2),
   };

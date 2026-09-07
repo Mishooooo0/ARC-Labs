@@ -1,8 +1,8 @@
 <script lang="ts">
   /**
-   * The vault as a library, in 3D.
+   * The vault as a bookcase.
    *
-   * ## What this replaced, and why twice
+   * ## What this replaced, and why three times
    *
    * First it was a d3-force graph. A force layout has no idea what a folder is
    * — it arranges by link topology, so a vault whose notes are barely linked
@@ -12,14 +12,25 @@
    *
    * Then it was flat shelves on a 2D canvas. Structurally right and visually
    * wrong: grey rectangles of one height standing on a hairline read as a bar
-   * chart, not a bookshelf. Depth is not decoration here — it is the thing that
-   * makes the metaphor legible.
+   * chart.
+   *
+   * Then it was those same planks in 3D — real depth, but still a plank per
+   * folder with a stub upright at the left end of each. Nothing enclosed
+   * anything, so it read as a diagram *of* a bookshelf. Now it is a carcass
+   * with boards in it, and the arrangement carries the meaning:
+   *
+   * - a folder's **board** is the surface its notes stand on
+   * - the **plinth** is the surface unfiled notes stand on
+   *
+   * which is why no folders means no boards, and X folders means X boards,
+   * with no branch anywhere that says so.
    *
    * ## The division of labour
    *
    * - `lib/shelves.ts` decides *where everything goes*. Pure, no DOM, tested.
    * - `lib/scene.ts` converts that to world space. Pure, tested — one place for
    *   a sign to be wrong instead of three.
+   * - `lib/finishes.ts` reads the three finishes out of the tokens.
    * - `LibraryScene.svelte` draws it.
    * - This owns the DOM, the pointer, and what to ask the app for.
    */
@@ -28,15 +39,23 @@
   import LibraryScene from "./LibraryScene.svelte";
   import type { TreeView } from "../lib/types";
   import {
+    compartmentAt,
     DEFAULT_LAYOUT,
     folderOf,
     layout as computeLayout,
-    shelfAt,
     type Book,
+    type Compartment,
     type LayoutOptions,
-    type Shelf,
   } from "../lib/shelves";
   import { framing, layoutPoint, SCALE, type ScreenLabel } from "../lib/scene";
+  import {
+    FINISHES,
+    readFinish,
+    storedFinish,
+    storeFinish,
+    type Finish,
+    type FinishName,
+  } from "../lib/finishes";
 
   let {
     tree,
@@ -57,11 +76,13 @@
 
   // ── Controls ──────────────────────────────────────────────────────────────
   // The flat view had none, which is what "geometry settings cannot be chosen"
-  // meant. These change the layout rather than decorating it.
+  // meant. These change the furniture rather than decorating it.
   let density = $state(1);
   let sort = $state<LayoutOptions["sort"]>("name");
   let showEmpty = $state(true);
-  let columns = $state<LayoutOptions["columns"]>("auto");
+  let finishName = $state<FinishName>("walnut");
+  /** Bumped to put the camera back at the framing. */
+  let resetKey = $state(0);
 
   /**
    * The window's shape, reported by the scene from Threlte's own canvas size
@@ -69,8 +90,7 @@
    *
    * Measuring this element is wrong whenever it has not been laid out — a pane
    * that is still hidden measures 0×0, the guard skips it, and the aspect stays
-   * at a hardcoded guess. That guess framed the library off the edge of the
-   * screen, and now it would also pick the wrong number of columns.
+   * at a hardcoded guess that frames the case off the edge of the screen.
    */
   let aspect = $state(16 / 9);
 
@@ -78,23 +98,25 @@
     if (w > 0 && h > 0) aspect = w / h;
   }
 
-  const opts = $derived<LayoutOptions>({
-    ...DEFAULT_LAYOUT,
-    density,
-    sort,
-    showEmpty,
-    columns,
-    aspect,
-  });
+  const opts = $derived<LayoutOptions>({ ...DEFAULT_LAYOUT, density, sort, showEmpty });
   const model = $derived(computeLayout(tree, vaultName, opts));
 
-  // ── Palette ───────────────────────────────────────────────────────────────
+  const folderCount = $derived(
+    model.bookcase.compartments.filter((c) => !c.isFloor).length,
+  );
+
+  // ── Finish and palette ────────────────────────────────────────────────────
   /**
-   * Three.js materials need colours, not CSS variables, so the tokens are read
-   * out once and handed to the scene. Re-read when the theme changes, which is
-   * what keeps `lint-tokens` honest: this component still holds no literal.
+   * three.js materials need colours, not CSS variables, so the tokens are read
+   * out and handed to the scene. Re-read when the theme changes, which is what
+   * keeps `lint-tokens` honest: this component still holds no literal.
+   *
+   * The finish is deliberately *not* re-read on a theme change — it is declared
+   * once in `:root` with no per-theme override, because picking walnut and then
+   * switching to the light theme should still give you walnut.
    */
-  let palette = $state<Record<string, string>>({});
+  let finish = $state<Finish | null>(null);
+  let accent = $state("");
 
   /**
    * `--arc-motion`, the accessibility gate.
@@ -106,29 +128,26 @@
    * spawn and settle dead.
    *
    * An absent token means the stylesheet has not loaded, not that motion is
-   * off, so it falls back to 1 rather than silently disabling animation
-   * everywhere.
+   * off, so it falls back to 1 rather than silently disabling animation.
    */
   let motion = $state(1);
 
-  function readPalette() {
+  function readTokens() {
     if (!host) return;
     const s = getComputedStyle(host);
-    const get = (n: string) => s.getPropertyValue(n).trim();
 
-    const raw = get("--arc-motion");
+    const raw = s.getPropertyValue("--arc-motion").trim();
     const m = raw === "" ? 1 : Number(raw);
     motion = Number.isFinite(m) ? Math.max(0, m) : 1;
 
-    palette = {
-      bg: get("--arc-bg-0"),
-      plank: get("--arc-line-strong"),
-      shelfLabel: get("--arc-fg-faint"),
-      book: get("--arc-fg-dim"),
-      canvasBook: get("--arc-fg-faint"),
-      accent: get("--arc-accent"),
-      fg: get("--arc-fg"),
-    };
+    accent = s.getPropertyValue("--arc-accent").trim();
+    finish = readFinish(host, finishName);
+  }
+
+  function pickFinish(name: FinishName) {
+    finishName = name;
+    storeFinish(name);
+    if (host) finish = readFinish(host, name);
   }
 
   // ── Camera ────────────────────────────────────────────────────────────────
@@ -144,7 +163,7 @@
   let hovered = $state<Book | null>(null);
   let held = $state<Book | null>(null);
   let heldAt = $state<{ x: number; y: number } | null>(null);
-  let target = $state<Shelf | null>(null);
+  let target = $state<Compartment | null>(null);
   /** Distinguishes a click from a drag, in world units travelled. */
   let travelled = 0;
 
@@ -155,21 +174,22 @@
   function onpick(b: Book) {
     held = b;
     travelled = 0;
-    target = model.shelves.find((s) => s.path === folderOf(b.path)) ?? null;
+    target = model.bookcase.compartments.find((c) => c.path === folderOf(b.path)) ?? null;
     heldAt = { x: (b.x + b.w / 2) / SCALE, y: -(b.y + b.h / 2) / SCALE };
   }
 
   /**
-   * The pointer, projected onto the wall by the raycaster and handed back in
-   * world units. Turning it into layout units is what lets the *same*
-   * `shelfAt` the flat version used pick the drop target.
+   * The pointer, projected onto the book plane by the raycaster and handed back
+   * in world units. Turning it into layout units is what lets the layout's own
+   * `compartmentAt` pick the drop target — and it stays correct at any camera
+   * angle, because the plane is fixed in the world and the camera is what moves.
    */
   function ondrag(world: { x: number; y: number }) {
     if (!held || !heldAt) return;
     travelled += Math.abs(world.x - heldAt.x) + Math.abs(world.y - heldAt.y);
     heldAt = world;
     const p = layoutPoint(world.x, world.y);
-    const over = shelfAt(model, p.x, p.y);
+    const over = compartmentAt(model, p.x, p.y);
     if (over?.path !== target?.path) target = over;
   }
 
@@ -208,9 +228,11 @@
       onopen(book.path);
       return;
     }
-    // Dropping a book back on its own shelf does nothing, deliberately. Order
+    // Dropping a book back where it came from does nothing, deliberately. Order
     // comes from the filename and the vault stores no manual ordering;
     // pretending to reorder would invent state that does not survive a reload.
+    // Dropping onto the floor is a real move, though — that is how a note gets
+    // taken back out to the vault root.
     if (drop && drop.path !== folderOf(book.path)) {
       onmove(book.path, drop.path);
     }
@@ -227,17 +249,18 @@
   const LABEL_CAP = 90;
   const labelled = $derived.by(() => {
     const all: Book[] = [];
-    for (const s of model.shelves) for (const b of s.books) all.push(b);
+    for (const c of model.bookcase.compartments) for (const b of c.books) all.push(b);
     if (all.length <= LABEL_CAP) return all;
     return [...all].sort((a, b) => b.w - a.w).slice(0, LABEL_CAP);
   });
 
   onMount(() => {
-    readPalette();
+    finishName = storedFinish();
+    readTokens();
 
-    // The theme is an attribute on the root; when it changes every colour here
-    // is stale.
-    const themes = new MutationObserver(readPalette);
+    // The theme is an attribute on the root; when it changes the accent and the
+    // motion multiplier here are stale.
+    const themes = new MutationObserver(readTokens);
     themes.observe(document.documentElement, {
       attributes: true,
       attributeFilter: ["data-theme", "style"],
@@ -254,11 +277,12 @@
   onpointerleave={release}
   role="presentation"
 >
-  {#if palette.accent}
+  {#if finish && accent}
     <Canvas>
       <LibraryScene
         {model}
-        {palette}
+        {finish}
+        {accent}
         {selected}
         {hovered}
         {held}
@@ -267,6 +291,7 @@
         {labelled}
         {camera}
         {motion}
+        {resetKey}
         controls={!held}
         {onhover}
         {onpick}
@@ -283,11 +308,18 @@
       thing a screen reader can read here. `aria-hidden` is deliberately absent
       for that reason, and `pointer-events: none` keeps it out of the way of a
       drag.
+
+      A spine's angle comes from the scene, which projects the book's own long
+      axis. Fixing it at −90° only looks right head-on, and the point of being
+      able to walk around the case is that usually you are not.
     -->
-    <div class="labels">
+    <div class="labels" style="--label:{finish.label}; --ink:{finish.ink}">
       {#each labels as l (l.key)}
         {#if l.kind === "spine"}
-          <span class="spine" style="left:{l.x}px; top:{l.y}px; width:{l.len}px">{l.text}</span>
+          <span
+            class="spine"
+            style="left:{l.x}px; top:{l.y}px; width:{l.len}px; --a:{l.angle}deg"
+          >{l.text}</span>
         {:else}
           <span
             class="shelf"
@@ -303,7 +335,15 @@
 
   <div class="controls data">
     <label>
-      <span>density</span>
+      <span>finish</span>
+      <select value={finishName} onchange={(e) => pickFinish(e.currentTarget.value as FinishName)}>
+        {#each FINISHES as f (f)}
+          <option value={f}>{f}</option>
+        {/each}
+      </select>
+    </label>
+    <label>
+      <span>height</span>
       <input type="range" min="0.7" max="1.6" step="0.1" bind:value={density} />
     </label>
     <label>
@@ -313,29 +353,20 @@
         <option value="size">size</option>
       </select>
     </label>
-    <label>
-      <span>bays</span>
-      <select bind:value={columns}>
-        <option value="auto">auto</option>
-        <option value={1}>1</option>
-        <option value={2}>2</option>
-        <option value={3}>3</option>
-        <option value={4}>4</option>
-      </select>
-    </label>
     <label class="check">
       <input type="checkbox" bind:checked={showEmpty} />
       <span>empty folders</span>
     </label>
+    <button type="button" onclick={() => resetKey++}>reset view</button>
   </div>
 
   <div class="legend data">
     <span>{tree.note_count.toLocaleString()} notes</span>
-    <span>{model.shelves.length.toLocaleString()} shelves</span>
+    <span>{folderCount.toLocaleString()} {folderCount === 1 ? "shelf" : "shelves"}</span>
     {#if held}
       <span class="hint">
         {#if target && target.path !== folderOf(held.path)}
-          drop to move into <strong>{target.label || "the vault root"}</strong>
+          drop to move into <strong>{target.isFloor ? "the vault root" : target.label}</strong>
         {:else}
           drag to another shelf to move it
         {/if}
@@ -343,6 +374,10 @@
     {:else if hovered}
       <span class="hover">{hovered.label}</span>
       <span class="dim">{hovered.size.toLocaleString()} bytes</span>
+    {:else if folderCount === 0}
+      <!-- The arrangement is the explanation, and this is the one moment it can
+           be said in six words. -->
+      <span class="dim">No folders yet — every folder you make becomes a shelf.</span>
     {/if}
   </div>
 </div>
@@ -370,12 +405,19 @@
     text-overflow: ellipsis;
   }
 
-  /* A folder name sits on its own plank, at the left end, reading normally. */
+  /*
+    A folder name sits on the front edge of its own board, and a note's name
+    runs up its spine — two different grounds, so two different inks. The app's
+    own greys were used for both at first, which put slate-grey text on walnut
+    and on cream paper and left neither readable. Both now come from the finish,
+    which is the only thing that knows what they are printed on.
+  */
   .shelf {
-    color: var(--arc-fg-faint);
+    color: var(--label);
     font-size: var(--arc-text-xs);
     letter-spacing: 0.04em;
     text-transform: uppercase;
+    transform: translateY(2px);
   }
   .shelf.is-target {
     color: var(--arc-accent);
@@ -386,18 +428,19 @@
   }
 
   /*
-    A spine title runs up the book, the way it does on a real shelf. Rotating
-    about the book's own centre is what keeps it on the spine at any zoom; the
-    width is the book's on-screen height, so a title too long for the book is
-    clipped rather than spilling across its neighbours.
+    A spine title runs up the book, the way it does on a real shelf. `--a` is
+    the projected angle of the book's own long axis, so the name stays on the
+    spine from any angle you have walked round to; the width is the book's
+    on-screen length, so a title too long for the book is clipped rather than
+    spilling across its neighbours.
   */
   .spine {
-    color: var(--arc-fg-dim);
+    color: var(--ink);
     font-size: var(--arc-text-xs);
     line-height: 1;
-    transform: translate(-50%, -50%) rotate(-90deg);
-    transform-origin: center;
     text-align: center;
+    transform: translate(-50%, -50%) rotate(var(--a));
+    transform-origin: center;
   }
 
   .controls {
@@ -433,6 +476,19 @@
   }
   .controls .check input {
     accent-color: var(--arc-accent);
+  }
+  .controls button {
+    background: var(--arc-bg-2);
+    color: var(--arc-fg-dim);
+    border: 0;
+    border-radius: var(--arc-radius-pill);
+    padding: 2px var(--arc-space-3);
+    font: inherit;
+    cursor: pointer;
+  }
+  .controls button:hover {
+    background: var(--arc-bg-3);
+    color: var(--arc-fg);
   }
 
   /*

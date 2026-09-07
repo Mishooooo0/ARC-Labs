@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
+  CASE_SIDE,
+  compartmentAt,
   DEFAULT_LAYOUT,
   folderOf,
+  INDENT,
   layout,
   movedInto,
-  shelfAt,
   spineWidth,
   stepToward,
+  type Layout,
 } from "./shelves";
 import type { TreeEntry, TreeView } from "./types";
 
@@ -31,6 +34,11 @@ function tree(rows: Array<[string, boolean, number?, number?]>): TreeView {
 }
 
 const opts = DEFAULT_LAYOUT;
+
+/** Every compartment that is a folder's, in order. */
+const folders = (l: Layout) => l.bookcase.compartments.filter((c) => !c.isFloor);
+/** The one compartment that is the floor of the case. */
+const floor = (l: Layout) => l.bookcase.compartments.find((c) => c.isFloor)!;
 
 describe("spineWidth", () => {
   it("never returns a book too thin to click", () => {
@@ -59,110 +67,124 @@ describe("spineWidth", () => {
   });
 });
 
-describe("layout", () => {
-  it("puts root notes on a shelf named for the vault", () => {
-    const l = layout(tree([["a.md", false, undefined, 10]]), "my-vault", opts);
-    expect(l.shelves[0]!.label).toBe("my-vault");
-    expect(l.shelves[0]!.books.map((b) => b.path)).toEqual(["a.md"]);
-  });
-
-  it("gives every folder a shelf, indented under its parent", () => {
+/**
+ * The four rules the whole layout exists to satisfy.
+ *
+ * Written as four tests named after them, because they are a specification
+ * someone handed over in four lines and this is the file that says whether the
+ * code still means them.
+ */
+describe("the four rules", () => {
+  it("#1 no folders means no boards, and the notes lie on the ground", () => {
     const l = layout(
       tree([
-        ["ARC", true],
-        ["ARC/Deep", true, 0],
-        ["ARC/Deep/n.md", false, 1, 20],
+        ["a.md", false, undefined, 400],
+        ["b.md", false, undefined, 900],
       ]),
       "v",
       opts,
     );
-    const arc = l.shelves.find((s) => s.path === "ARC")!;
-    const deep = l.shelves.find((s) => s.path === "ARC/Deep")!;
 
-    expect(arc.depth).toBe(1);
-    expect(deep.depth).toBe(2);
-    expect(deep.x).toBeGreaterThan(arc.x);
-    // A child sits below its parent, which is what makes depth readable
-    // without drawing a single connecting line.
-    expect(deep.y).toBeGreaterThan(arc.y);
+    expect(l.bookcase.boards).toHaveLength(0);
+    expect(folders(l)).toHaveLength(0);
+
+    // Every note stands on the plinth — its foot is exactly the floor.
+    const f = floor(l);
+    expect(f.surfaceY).toBe(l.bookcase.floorY);
+    expect(f.books).toHaveLength(2);
+    for (const b of f.books) expect(b.y + b.h).toBeCloseTo(l.bookcase.floorY, 6);
   });
 
-  /**
-   * The reason this view reads the tree rather than the graph. A folder with no
-   * notes appears in no graph payload, and an invisible folder cannot be a drop
-   * target — so "drag a book onto the shelf you just made" would be impossible.
-   */
-  it("shows a folder that has no notes in it", () => {
+  it("#2 X folders means exactly X boards", () => {
+    for (const x of [0, 1, 5, 40]) {
+      const rows: Array<[string, boolean, number?, number?]> = [];
+      for (let i = 0; i < x; i++) rows.push([`F${i}`, true]);
+
+      const l = layout(tree(rows), "v", opts);
+      expect(l.bookcase.boards, `${x} folders`).toHaveLength(x);
+      expect(folders(l), `${x} folders`).toHaveLength(x);
+      // The floor is always there, and is never one of them.
+      expect(l.bookcase.compartments).toHaveLength(x + 1);
+    }
+  });
+
+  it("#3 a folder with no notes still gets its board", () => {
     const l = layout(tree([["Empty", true]]), "v", opts);
-    const empty = l.shelves.find((s) => s.path === "Empty");
+    const empty = folders(l).find((c) => c.path === "Empty");
+
     expect(empty).toBeDefined();
     expect(empty!.books).toHaveLength(0);
+    expect(l.bookcase.boards).toHaveLength(1);
+    // And it is still somewhere a book can be dropped, which is the whole
+    // reason an empty folder has to be drawn at all.
+    expect(compartmentAt(l, empty!.x + 5, empty!.surfaceY - 4)?.path).toBe("Empty");
   });
 
-  it("can hide empty folders without hiding the root", () => {
-    const l = layout(tree([["Empty", true]]), "v", { ...opts, showEmpty: false });
-    expect(l.shelves.find((s) => s.path === "Empty")).toBeUndefined();
-    // The root shelf survives even with nothing on it: it is where a note with
-    // no folder would land, so it has to stay a target.
-    expect(l.shelves.find((s) => s.path === "")).toBeDefined();
-  });
-
-  it("wraps a shelf that outgrows its width instead of running off screen", () => {
-    const rows: Array<[string, boolean, number?, number?]> = [["F", true]];
-    for (let i = 0; i < 120; i++) rows.push([`F/n${i}.md`, false, 0, 500]);
-
-    const l = layout(tree(rows), "v", { ...opts, maxShelfWidth: 300 });
-    const shelf = l.shelves.find((s) => s.path === "F")!;
-    const ys = new Set(shelf.books.map((b) => b.y));
-
-    expect(ys.size).toBeGreaterThan(1);
-    expect(shelf.h).toBeGreaterThan(100);
-    for (const b of shelf.books) {
-      expect(b.x + b.w).toBeLessThanOrEqual(shelf.x + 300 + 46);
-    }
-  });
-
-  it("never overlaps two books on the same row", () => {
-    const rows: Array<[string, boolean, number?, number?]> = [["F", true]];
-    for (let i = 0; i < 30; i++) rows.push([`F/n${i}.md`, false, 0, i * 900]);
-
-    const shelf = layout(tree(rows), "v", opts).shelves.find((s) => s.path === "F")!;
-    const byRow = new Map<number, typeof shelf.books>();
-    for (const b of shelf.books) {
-      const list = byRow.get(b.y) ?? [];
-      list.push(b);
-      byRow.set(b.y, list);
-    }
-    for (const list of byRow.values()) {
-      list.sort((a, b) => a.x - b.x);
-      for (let i = 1; i < list.length; i++) {
-        expect(list[i]!.x).toBeGreaterThanOrEqual(list[i - 1]!.x + list[i - 1]!.w);
-      }
-    }
-  });
-
-  it("never overlaps two shelves", () => {
+  it("#4 a folder's notes all stand on that folder's board", () => {
     const l = layout(
       tree([
-        ["a.md", false, undefined, 10],
-        ["A", true],
-        ["A/b.md", false, 1, 10],
-        ["B", true],
-        ["B/c.md", false, 3, 10],
+        ["F", true],
+        ["F/a.md", false, 0, 400],
+        ["F/b.md", false, 0, 4000],
+        ["G", true],
+        ["G/c.md", false, 3, 40],
       ]),
       "v",
       opts,
     );
-    // Rectangles, not "each one lower than the last": bays stand side by side
-    // now, so the second column starts back at the top by design.
-    for (let i = 0; i < l.shelves.length; i++) {
-      for (let j = i + 1; j < l.shelves.length; j++) {
-        const a = l.shelves[i]!;
-        const b = l.shelves[j]!;
-        const apart =
-          a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y;
-        expect(apart, `${a.path || "root"} overlaps ${b.path || "root"}`).toBe(true);
+
+    for (const c of folders(l)) {
+      const board = l.bookcase.boards[l.bookcase.compartments.indexOf(c)]!;
+      expect(board.y).toBeCloseTo(c.surfaceY, 6);
+      for (const b of c.books) {
+        // The foot of every book meets the top face of its own board.
+        expect(b.y + b.h, `${b.path} on ${c.path}`).toBeCloseTo(c.surfaceY, 6);
       }
+    }
+
+    expect(folders(l).find((c) => c.path === "F")!.books.map((b) => b.path)).toEqual([
+      "F/a.md",
+      "F/b.md",
+    ]);
+    expect(folders(l).find((c) => c.path === "G")!.books.map((b) => b.path)).toEqual(["G/c.md"]);
+  });
+});
+
+describe("the carcass", () => {
+  it("keeps every book inside the interior", () => {
+    const rows: Array<[string, boolean, number?, number?]> = [["F", true]];
+    for (let i = 0; i < 40; i++) rows.push([`F/n${i}.md`, false, 0, i * 800]);
+
+    const l = layout(tree(rows), "v", opts);
+    const c = l.bookcase;
+
+    for (const comp of c.compartments) {
+      for (const b of comp.books) {
+        expect(b.x).toBeGreaterThanOrEqual(c.innerX - 0.001);
+        expect(b.x + b.w).toBeLessThanOrEqual(c.innerX + c.innerW + 0.001);
+        expect(b.y).toBeGreaterThanOrEqual(c.innerY - 0.001);
+        expect(b.y + b.h).toBeLessThanOrEqual(c.floorY + 0.001);
+      }
+    }
+  });
+
+  it("puts the interior inside the sides, and the plinth under it", () => {
+    const l = layout(tree([["F", true]]), "v", opts);
+    const c = l.bookcase;
+
+    expect(c.innerX).toBe(c.x + CASE_SIDE);
+    expect(c.innerW).toBe(c.w - CASE_SIDE * 2);
+    expect(c.floorY).toBeGreaterThan(c.innerY);
+    expect(c.h).toBeGreaterThan(c.floorY);
+  });
+
+  it("never overlaps two boards", () => {
+    const rows: Array<[string, boolean, number?, number?]> = [];
+    for (let i = 0; i < 8; i++) rows.push([`F${i}`, true]);
+
+    const boards = layout(tree(rows), "v", opts).bookcase.boards;
+    for (let i = 1; i < boards.length; i++) {
+      expect(boards[i]!.y).toBeGreaterThan(boards[i - 1]!.y);
     }
   });
 
@@ -173,177 +195,170 @@ describe("layout", () => {
       ["B/two.md", false, 0, 30],
       ["A", true],
       ["A/one.md", false, 2, 10],
+      ["loose.md", false, undefined, 55],
     ]);
     expect(JSON.stringify(layout(t, "v", opts))).toBe(JSON.stringify(layout(t, "v", opts)));
   });
+});
 
-  it("sorts by size when asked, and by name otherwise", () => {
-    // Deliberately named so the two orders disagree. With `big`/`small` the
-    // alphabetical and by-size orders coincide, and the test would pass even if
-    // the sort control did nothing at all.
-    const t = tree([
-      ["F", true],
-      ["F/apple.md", false, 0, 10],
-      ["F/zebra.md", false, 0, 9000],
-    ]);
-    const byName = layout(t, "v", opts).shelves.find((s) => s.path === "F")!;
-    expect(byName.books.map((b) => b.label)).toEqual(["apple", "zebra"]);
+describe("compression", () => {
+  /**
+   * The choice made deliberately: a shelf too full for its books shrinks them
+   * rather than wrapping onto a second board, because a second board would mean
+   * one folder had two shelves and rule #2 would stop being true.
+   */
+  it("fits a folder of five hundred notes onto its one board", () => {
+    const rows: Array<[string, boolean, number?, number?]> = [["F", true]];
+    for (let i = 0; i < 557; i++) rows.push([`F/n${i}.md`, false, 0, 2000]);
 
-    const bySize = layout(t, "v", { ...opts, sort: "size" }).shelves.find((s) => s.path === "F")!;
-    expect(bySize.books.map((b) => b.label)).toEqual(["zebra", "apple"]);
+    const l = layout(tree(rows), "v", opts);
+    const comp = folders(l)[0]!;
+
+    expect(l.bookcase.boards).toHaveLength(1);
+    expect(comp.books).toHaveLength(557);
+
+    const last = comp.books[comp.books.length - 1]!;
+    expect(last.x + last.w).toBeLessThanOrEqual(comp.x + comp.w + 0.001);
+    // Every book is still a positive size, so nothing becomes a degenerate
+    // matrix that three would refuse to draw.
+    for (const b of comp.books) expect(b.w).toBeGreaterThan(0);
   });
 
-  it("survives an entirely empty vault", () => {
-    const l = layout(tree([]), "v", opts);
-    expect(l.shelves).toHaveLength(1);
-    expect(l.shelves[0]!.books).toHaveLength(0);
-    expect(l.height).toBeGreaterThanOrEqual(0);
+  it("keeps a long note wider than a short one even when squeezed", () => {
+    const rows: Array<[string, boolean, number?, number?]> = [["F", true]];
+    for (let i = 0; i < 300; i++) rows.push([`F/stub${i}.md`, false, 0, 10]);
+    rows.push(["F/essay.md", false, 0, 400_000]);
+
+    const comp = folders(layout(tree(rows), "v", opts))[0]!;
+    const essay = comp.books.find((b) => b.path === "F/essay.md")!;
+    const stub = comp.books.find((b) => b.path === "F/stub0.md")!;
+
+    // One factor for the whole shelf, so the size signal survives the squeeze.
+    expect(essay.w).toBeGreaterThan(stub.w);
   });
 
-  it("strips the extension for the spine but keeps the path", () => {
-    const l = layout(tree([["Note name.md", false, undefined, 5]]), "v", opts);
-    const b = l.shelves[0]!.books[0]!;
-    expect(b.label).toBe("Note name");
-    expect(b.path).toBe("Note name.md");
-  });
-
-  it("marks canvases so they can be drawn differently", () => {
+  it("does not squeeze a shelf that fits", () => {
     const l = layout(
       tree([
-        ["a.md", false, undefined, 5],
-        ["b.canvas", false, undefined, 5],
+        ["F", true],
+        ["F/a.md", false, 0, 400],
       ]),
       "v",
       opts,
     );
-    const books = l.shelves[0]!.books;
-    expect(books.find((b) => b.path === "b.canvas")!.isCanvas).toBe(true);
-    expect(books.find((b) => b.path === "a.md")!.isCanvas).toBe(false);
+    expect(folders(l)[0]!.books[0]!.w).toBe(spineWidth(400));
   });
 });
 
-describe("columns", () => {
-  /** A vault of `n` folders with one note each — `n + 1` bays with the root. */
-  function folders(n: number) {
-    const rows: Array<[string, boolean, number?, number?]> = [];
-    for (let i = 0; i < n; i++) {
-      rows.push([`F${i}`, true]);
-      rows.push([`F${i}/n.md`, false, i * 2, 400]);
-    }
-    return tree(rows);
-  }
+describe("nesting", () => {
+  it("indents a nested folder's books by one step per level", () => {
+    const l = layout(
+      tree([
+        ["ARC", true],
+        ["ARC/Deep", true, 0],
+        ["ARC/Deep/Deeper", true, 1],
+        ["ARC/Deep/Deeper/n.md", false, 2, 20],
+      ]),
+      "v",
+      opts,
+    );
 
-  /**
-   * Which column a shelf stands in, by its origin.
-   *
-   * Not the raw `x`: a nested shelf is indented from its parent, so counting
-   * distinct `x` values counts indent levels as well as columns.
-   */
-  const columns = (l: ReturnType<typeof layout>) =>
-    new Set(l.shelves.map((s) => s.x - s.depth * 34));
+    const arc = folders(l).find((c) => c.path === "ARC")!;
+    const deep = folders(l).find((c) => c.path === "ARC/Deep")!;
+    const deeper = folders(l).find((c) => c.path === "ARC/Deep/Deeper")!;
 
-  /**
-   * The defect this exists to fix. Stacked in one column, a vault of eight
-   * folders is roughly three times taller than it is wide, so a wide window has
-   * to shrink it to a strip down the middle — which is what "still small" was.
-   */
-  it("stands bays side by side rather than one thin strip in a wide window", () => {
-    const wide = layout(folders(8), "v", { ...opts, aspect: 16 / 9 });
-    expect(columns(wide).size).toBeGreaterThan(1);
-    // Within a factor of two of the window it has to fill — the point being
-    // that it is no longer off by a factor of five.
-    expect(wide.width / wide.height).toBeGreaterThan((16 / 9) * 0.5);
-    expect(wide.width / wide.height).toBeLessThan((16 / 9) * 2);
+    expect(deep.x - arc.x).toBe(INDENT);
+    expect(deeper.x - deep.x).toBe(INDENT);
+    // A child's board sits below its parent's, which is what makes depth
+    // readable without drawing a single connecting line.
+    expect(deep.surfaceY).toBeGreaterThan(arc.surfaceY);
+    expect(deeper.surfaceY).toBeGreaterThan(deep.surfaceY);
+
+    // The indent comes out of the space its books have, not out of the board.
+    expect(deeper.w).toBe(arc.w - INDENT * 2);
   });
 
-  it("uses one column when the window is tall and narrow", () => {
-    const tall = layout(folders(8), "v", { ...opts, aspect: 0.4 });
-    expect(columns(tall).size).toBe(1);
+  it("gives the floor the vault's own name", () => {
+    const l = layout(tree([["a.md", false, undefined, 10]]), "my-vault", opts);
+    expect(floor(l).label).toBe("my-vault");
+    expect(floor(l).books.map((b) => b.path)).toEqual(["a.md"]);
   });
 
-  it("obeys an explicit column count, because it is a control", () => {
-    const two = layout(folders(9), "v", { ...opts, columns: 2 });
-    expect(columns(two).size).toBe(2);
-
-    const one = layout(folders(9), "v", { ...opts, columns: 1 });
-    expect(columns(one).size).toBe(1);
-  });
-
-  /**
-   * A child shelf reads as belonging to the one above it because it is indented
-   * from it. Split a folder across a column break and the child lands at the
-   * top of the next column with nothing to be indented *from*, and the nesting
-   * stops meaning anything.
-   */
-  it("keeps a folder's subtree together in one column", () => {
-    const rows: Array<[string, boolean, number?, number?]> = [];
-    for (let i = 0; i < 6; i++) {
-      rows.push([`F${i}`, true]);
-      rows.push([`F${i}/kid`, true, i * 3]);
-      rows.push([`F${i}/kid/n.md`, false, i * 3 + 1, 400]);
-    }
-    const l = layout(tree(rows), "v", { ...opts, aspect: 16 / 9 });
-
-    for (let i = 0; i < 6; i++) {
-      const parent = l.shelves.find((s) => s.path === `F${i}`)!;
-      const kid = l.shelves.find((s) => s.path === `F${i}/kid`)!;
-      // Same column: the child is exactly one indent right of its parent, and
-      // below it.
-      expect(kid.x - parent.x).toBe(34);
-      expect(kid.y).toBeGreaterThan(parent.y);
-    }
-  });
-
-  it("runs every plank in a column out to the same edge", () => {
-    const l = layout(folders(6), "v", { ...opts, columns: 2 });
-    const edges = new Map<number, Set<number>>();
-    for (const s of l.shelves) {
-      const col = s.x - s.depth * 34;
-      const set = edges.get(col) ?? new Set<number>();
-      set.add(s.x + s.w);
-      edges.set(col, set);
-    }
-    for (const [col, set] of edges) {
-      expect(set.size, `column at ${col} has ragged plank ends`).toBe(1);
-    }
-  });
-
-  it("is still deterministic once columns are in play", () => {
-    const t = folders(7);
-    const a = layout(t, "v", { ...opts, aspect: 1.9 });
-    const b = layout(t, "v", { ...opts, aspect: 1.9 });
-    expect(JSON.stringify(a)).toBe(JSON.stringify(b));
-  });
-
-  it("never leaves a column empty, which would open a hole in the case", () => {
-    const l = layout(folders(5), "v", { ...opts, columns: 3 });
-    const xs = [...columns(l)].sort((a, b) => a - b);
-    // Column origins are evenly spaced: no gap where a column was skipped.
-    for (let i = 2; i < xs.length; i++) {
-      expect(xs[i]! - xs[i - 1]!).toBeCloseTo(xs[1]! - xs[0]!, 6);
-    }
+  it("can hide empty folders without hiding the floor", () => {
+    const l = layout(tree([["Empty", true]]), "v", { ...opts, showEmpty: false });
+    expect(l.bookcase.boards).toHaveLength(0);
+    // The floor survives even with nothing on it: it is where a note with no
+    // folder would land, so it has to stay a target.
+    expect(floor(l)).toBeDefined();
   });
 });
 
-/**
- * Only the shelf is hit-tested here now. A *book* is picked by three's own
- * raycaster against the instanced mesh, which reports the instance it hit — so
- * a hand-written rectangle test for books would be a second answer to a
- * question already answered, and the two would drift.
- */
+describe("the messy drawer", () => {
+  /**
+   * The one visual difference between filed and unfiled. Notes on a board stand
+   * straight; notes on the floor lean, which is what makes the bottom of the
+   * case read as a drawer rather than as another shelf.
+   */
+  it("leans notes on the floor and nothing else", () => {
+    const l = layout(
+      tree([
+        ["F", true],
+        ["F/filed.md", false, 0, 400],
+        ["loose-one.md", false, undefined, 400],
+        ["loose-two.md", false, undefined, 400],
+      ]),
+      "v",
+      opts,
+    );
+
+    for (const b of folders(l)[0]!.books) expect(b.lean).toBe(0);
+    expect(floor(l).books.some((b) => b.lean !== 0)).toBe(true);
+  });
+
+  it("leans the same way every time, so mess is not jitter", () => {
+    const t = tree([
+      ["a.md", false, undefined, 400],
+      ["b.md", false, undefined, 400],
+      ["c.md", false, undefined, 400],
+    ]);
+    const first = floor(layout(t, "v", opts)).books.map((b) => b.lean);
+    const again = floor(layout(t, "v", opts)).books.map((b) => b.lean);
+    expect(first).toEqual(again);
+    // And it is a lean, not a topple.
+    for (const lean of first) expect(Math.abs(lean)).toBeLessThan(0.2);
+  });
+});
+
 describe("hit testing", () => {
+  /**
+   * Only compartments are hit-tested here. A *book* is picked by three's own
+   * raycaster against the instanced mesh, which reports the instance it hit —
+   * so a hand-written rectangle test for books would be a second answer to a
+   * question already answered, and the two would drift.
+   */
   const l = layout(
     tree([
       ["F", true],
       ["F/n.md", false, 0, 400],
+      ["loose.md", false, undefined, 400],
     ]),
     "v",
     opts,
   );
-  const shelf = l.shelves.find((s) => s.path === "F")!;
 
-  it("finds the shelf even where there is no book, so empty shelves take drops", () => {
-    expect(shelfAt(l, shelf.x + 5, shelf.y + shelf.h / 2)?.path).toBe("F");
+  it("finds a folder's compartment above its board", () => {
+    const f = folders(l)[0]!;
+    expect(compartmentAt(l, f.x + 20, f.surfaceY - 10)?.path).toBe("F");
+  });
+
+  it("finds the floor, so a note can be moved back to the vault root", () => {
+    const g = floor(l);
+    expect(compartmentAt(l, g.x + 20, g.surfaceY - 10)?.isFloor).toBe(true);
+  });
+
+  it("finds nothing outside the case", () => {
+    expect(compartmentAt(l, -500, l.bookcase.innerY + 10)).toBeNull();
+    expect(compartmentAt(l, l.bookcase.innerX + 10, -500)).toBeNull();
   });
 });
 
@@ -367,7 +382,7 @@ describe("the motion budget", () => {
 
   /**
    * The accessibility gate. Appearance → Motion 0 — and `prefers-reduced-motion`,
-   * which forces that token to 0 — must stop every animation dead. A canvas
+   * which forces that token to 0 — must stop every animation dead. A frame
    * loop does not inherit that the way a CSS transition does, so it is asserted
    * here rather than trusted.
    */
@@ -409,27 +424,98 @@ describe("the motion budget", () => {
   });
 });
 
-describe("planks", () => {
-  it("puts a plank under every row, so wrapped books are not floating", () => {
-    const rows: Array<[string, boolean, number?, number?]> = [["F", true]];
-    for (let i = 0; i < 60; i++) rows.push([`F/n${i}.md`, false, 0, 500]);
-
-    const shelf = layout(tree(rows), "v", { ...opts, maxShelfWidth: 300 }).shelves.find(
-      (s) => s.path === "F",
-    )!;
-    const rowTops = new Set(shelf.books.map((b) => b.y));
-
-    expect(shelf.planks).toHaveLength(rowTops.size);
-    // Every book stands on one of them: its underside meets a plank exactly.
-    for (const b of shelf.books) {
-      expect(shelf.planks.some((p) => Math.abs(b.y + b.h - p) < 0.001)).toBe(true);
-    }
+describe("edge cases", () => {
+  it("survives an entirely empty vault", () => {
+    const l = layout(tree([]), "v", opts);
+    expect(l.bookcase.boards).toHaveLength(0);
+    expect(floor(l).books).toHaveLength(0);
+    expect(l.height).toBeGreaterThan(0);
+    expect(l.width).toBeGreaterThan(0);
   });
 
-  it("gives an empty shelf a plank anyway, so it still reads as a shelf", () => {
-    const shelf = layout(tree([["Empty", true]]), "v", opts).shelves.find(
-      (s) => s.path === "Empty",
-    )!;
-    expect(shelf.planks).toHaveLength(1);
+  it("strips the extension for the spine but keeps the path", () => {
+    const l = layout(tree([["Note name.md", false, undefined, 5]]), "v", opts);
+    const b = floor(l).books[0]!;
+    expect(b.label).toBe("Note name");
+    expect(b.path).toBe("Note name.md");
+  });
+
+  it("marks canvases so they can be drawn differently", () => {
+    const l = layout(
+      tree([
+        ["a.md", false, undefined, 5],
+        ["b.canvas", false, undefined, 5],
+      ]),
+      "v",
+      opts,
+    );
+    const books = floor(l).books;
+    expect(books.find((b) => b.path === "b.canvas")!.isCanvas).toBe(true);
+    expect(books.find((b) => b.path === "a.md")!.isCanvas).toBe(false);
+  });
+
+  it("sorts by size when asked, and by name otherwise", () => {
+    // Deliberately named so the two orders disagree. With `big`/`small` the
+    // alphabetical and by-size orders coincide, and the test would pass even if
+    // the sort control did nothing at all.
+    const t = tree([
+      ["F", true],
+      ["F/apple.md", false, 0, 10],
+      ["F/zebra.md", false, 0, 9000],
+    ]);
+    expect(folders(layout(t, "v", opts))[0]!.books.map((b) => b.label)).toEqual([
+      "apple",
+      "zebra",
+    ]);
+    expect(
+      folders(layout(t, "v", { ...opts, sort: "size" }))[0]!.books.map((b) => b.label),
+    ).toEqual(["zebra", "apple"]);
+  });
+
+  /**
+   * Furniture does not shrink to fit what you put in it. Without a floor on the
+   * height, a vault with no folders came out three and a half times wider than
+   * it was tall — a shoe rack, not the empty bookcase the rules describe.
+   */
+  it("is a bookcase even with nothing in it", () => {
+    const bare = layout(tree([]), "v", opts);
+    expect(bare.height).toBeGreaterThan(bare.width * 0.7);
+
+    // The extra height is headroom over the loose notes, not a stretched shelf:
+    // it is the part of the case you have not put a shelf in yet.
+    const f = floor(bare);
+    expect(f.h).toBeGreaterThan(400);
+    expect(f.surfaceY).toBe(bare.bookcase.floorY);
+  });
+
+  it("stops adding headroom once there are enough shelves to fill the case", () => {
+    const rows: Array<[string, boolean, number?, number?]> = [];
+    for (let i = 0; i < 8; i++) rows.push([`F${i}`, true]);
+
+    const full = layout(tree(rows), "v", opts);
+    const bare = layout(tree([]), "v", opts);
+
+    // Eight shelves are taller than the minimum, so the floor is an ordinary
+    // compartment again rather than a hall.
+    expect(full.height).toBeGreaterThan(bare.height);
+    expect(floor(full).h).toBeLessThan(floor(bare).h);
+  });
+
+  it("grows the case taller as folders are added", () => {
+    const one = layout(tree([["A", true]]), "v", opts);
+    const five = layout(
+      tree([
+        ["A", true],
+        ["B", true],
+        ["C", true],
+        ["D", true],
+        ["E", true],
+      ]),
+      "v",
+      opts,
+    );
+    expect(five.height).toBeGreaterThan(one.height);
+    // But not wider: the width comes from the fullest shelf, not the count.
+    expect(five.width).toBe(one.width);
   });
 });

@@ -63,6 +63,68 @@
   --arc-danger: #c96a68;
   --arc-warn: #b8925a;
 
+  /* ── Bookcase finishes ────────────────────────────────────────────────────
+   * The library draws a piece of furniture, and its finish is a choice the
+   * person makes — walnut, painted white, or the logo's emerald — not a
+   * consequence of the theme. So these are declared once here and are *not*
+   * overridden per theme: picking walnut and then switching to the light theme
+   * should give you the same walnut.
+   *
+   * They are tokens rather than literals in the component for the usual reason
+   * — `lint-tokens` fails the build on a colour outside this file — and they
+   * are read out through `getComputedStyle` in `lib/finishes.ts`, because
+   * three.js materials need a colour value and cannot resolve a CSS variable.
+   *
+   * `book` and `book-alt` (canvases) are the two spine colours. Neither may be
+   * amber or blue in any finish: those two hues mean authorship and nothing
+   * else, and a shelf of amber books would be the largest possible lie about
+   * who wrote what.
+   *
+   * There are two text colours because there are two grounds. `label` is a
+   * folder name printed on the front edge of its board, so it has to read
+   * against the *wood*; `ink` is a note's name printed up its spine, so it has
+   * to read against the *book*. On walnut those are opposite — light on dark
+   * wood, dark on pale paper — and using one colour for both leaves half the
+   * text nearly invisible, which is exactly what the first version did.
+   *
+   * Walnut, honestly, sits close to `--arc-human`'s hue family. Nothing in the
+   * library encodes authorship today, so it breaks nothing — but when it does,
+   * it will need a marker rather than a colour. */
+
+  /* Reference: American walnut, satin. Boards catch more light than the sides,
+     the back sits in shadow, the front edges are where the light lands. */
+  --arc-finish-walnut-case: #6b4a2f;
+  --arc-finish-walnut-board: #7c5738;
+  --arc-finish-walnut-back: #492f1e;
+  --arc-finish-walnut-edge: #8d6844;
+  --arc-finish-walnut-book: #cbbb9f;
+  --arc-finish-walnut-book-alt: #a78f6c;
+  --arc-finish-walnut-label: #d8c4a6;
+  --arc-finish-walnut-ink: #4a3a26;
+
+  /* Painted oak. The case is lighter than anything on it, so the spines invert
+     — dark books against a pale case, rather than pale books glowing on a dark
+     one. */
+  --arc-finish-white-case: #e9e4db;
+  --arc-finish-white-board: #f2eee7;
+  --arc-finish-white-back: #d5cec3;
+  --arc-finish-white-edge: #fbf8f3;
+  --arc-finish-white-book: #6f6c65;
+  --arc-finish-white-book-alt: #918d84;
+  --arc-finish-white-label: #4a4741;
+  --arc-finish-white-ink: #efede8;
+
+  /* Built on #5f9e8c — the logo's own green, and already --arc-accent. Deeper
+     in the body so the edge reads as the mark's colour catching the light. */
+  --arc-finish-emerald-case: #2e5d4f;
+  --arc-finish-emerald-board: #386e5e;
+  --arc-finish-emerald-back: #1f4237;
+  --arc-finish-emerald-edge: #5f9e8c;
+  --arc-finish-emerald-book: #c6d8d0;
+  --arc-finish-emerald-book-alt: #9cbab0;
+  --arc-finish-emerald-label: #cfe0d9;
+  --arc-finish-emerald-ink: #23453b;
+
   /* ── Type ─────────────────────────────────────────────────────────────── */
   --arc-font-ui: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
     "Helvetica Neue", Arial, sans-serif;

@@ -2,13 +2,62 @@
 
 ## Unreleased
 
+### The library became a bookcase
+
+It is one piece of furniture now — two sides, a top with a lip, a solid back and
+a plinth — rather than a set of free-floating planks. The arrangement carries the
+meaning, and four rules fall out of it with no branch anywhere that states them:
+
+| | |
+|---|---|
+| no folders | **no boards.** Notes lie on the plinth — the messy drawer |
+| X folders | **X boards** |
+| a board, no notes | an empty board, still a drop target |
+| a board, X notes | that board holds those X notes |
+
+All four hold because **a folder's board is the surface its notes stand on, and
+the plinth is the surface unfiled notes stand on.** The vault root needs no board
+because a bookcase already has a floor, so "no folders means no boards" is the
+absence of a loop iteration rather than a special case. The four are four tests,
+named after them.
+
+Unfiled notes lean a few degrees; notes on a board stand straight. That is the
+whole visual difference between filed and unfiled, and it is what makes the
+bottom of the case read as a drawer.
+
+- **Three finishes** — walnut, painted white, and the logo's own emerald
+  (`#5f9e8c`, which is `--arc-accent`). A finish is a choice about furniture, so
+  it is declared once and does not change with the theme; it persists across
+  reloads. The grain is a luminance mask computed pixel by pixel at startup,
+  because the CSP allows no image from anywhere and because canvas stroke
+  rasterisation is not identical across engines — this way the bookcase is the
+  same every time you open it.
+- **You can walk around it.** The azimuth clamp is gone, pan is on, and there is
+  a reset. Dragging still works from any angle because the layout plane is fixed
+  in the world and the camera is what moves — and from behind, the back panel
+  stops you picking a book through it, which is correct and free.
+- **Note names run up their spines**, rotated to the book's *projected* axis so
+  they stay on the spine at any angle, and hidden when the case is seen from
+  behind — DOM text has no idea the back panel is there.
+- **Dropping a note on the floor** moves it back out to the vault root.
+
+**The cost of one choice, stated.** A folder whose books do not fit gets them
+scaled down by a single factor rather than wrapping onto a second board, because
+a second board would mean one folder had two shelves and rule #2 would stop being
+true. On the 5,000-note fixture — nine folders of ~557 notes — that makes spines
+a hairline at full-case framing. Zoom is the answer, and free rotation is what
+makes zoom a real gesture rather than a workaround.
+
+The column packing added one commit earlier is gone. It existed because one plank
+per folder stacked vertically made a thin strip in a wide window; a carcass with
+a real interior width is portrait on its own. `bays` is replaced by `finish`.
+
 ### The graph became a library
 
 The force-directed graph is gone. Folders are shelves, notes are books standing
 on them with a spine width taken from the note's length, and dragging a book to
-another shelf moves the file after a confirm. It draws in 3D, with the layout
-packed into columns so a bookcase is roughly the shape of the window it has to
-fit in rather than a thin strip down the middle.
+another shelf moves the file after a confirm — the step that got it into 3D,
+before the carcass above replaced the loose planks it drew.
 
 ### A Phase 6 gate surface was removed, deliberately
 

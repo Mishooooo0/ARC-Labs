@@ -1,10 +1,26 @@
 /**
- * Turning a vault tree into a bookshelf.
+ * Turning a vault tree into a bookcase.
  *
  * Pure: a tree in, geometry out. No canvas, no DOM, no clock. That is what
- * makes the layout testable — every case worth checking here (a folder with one
- * note, a folder with four hundred, a folder nested five deep, a vault that is
- * entirely empty) is a value rather than something to eyeball on screen.
+ * makes the layout testable — every case worth checking here (a vault with no
+ * folders at all, a folder with four hundred notes, a folder nested five deep,
+ * a vault that is entirely empty) is a value rather than something to eyeball.
+ *
+ * ## The four rules, and why they need no special cases
+ *
+ * | | |
+ * |---|---|
+ * | bookcase + no folders | no boards; notes lie on the ground |
+ * | bookcase + X folders | X boards |
+ * | board + 0 notes | an empty board |
+ * | board + X notes | that board holds those X notes |
+ *
+ * All four fall out of one arrangement: **a folder's board is the surface its
+ * notes stand on, and the plinth is the surface the unfiled notes stand on.**
+ * X folders therefore need exactly X boards — the vault root needs none,
+ * because a bookcase already has a floor. "No folders means no boards" is then
+ * the absence of a loop iteration rather than a branch, which is the reason to
+ * build it this way round.
  *
  * ## Why the tree and not the graph
  *
@@ -17,96 +33,139 @@
 
 import type { TreeEntry, TreeView } from "./types";
 
-/** One note, as a book standing on a shelf. */
+/** One note, as a book standing on a surface. */
 export interface Book {
   path: string;
   /** Filename without its extension — what is printed on the spine. */
   label: string;
   isCanvas: boolean;
   size: number;
-  /** Position of the spine's left edge, in world units. */
+  /** Left edge of the spine, in layout units. */
   x: number;
+  /** Top edge. The book's foot is `y + h`, and that rests on its surface. */
   y: number;
   w: number;
-  h: number;
-}
-
-/** One folder, as a shelf. */
-export interface Shelf {
-  /** Vault path of the folder. `""` is the vault root. */
-  path: string;
-  label: string;
-  depth: number;
-  x: number;
-  y: number;
-  /** Width of the plank. Runs out to the right edge of its column. */
-  w: number;
-  /** Height of the whole shelf, including every wrapped row. */
   h: number;
   /**
-   * The y of every plank in this bay, top row first.
+   * Tilt, in radians, about the book's foot.
    *
-   * One per *row*, not one per shelf. A shelf whose books wrapped used to draw
-   * a single plank at the bottom, which left every wrapped row standing on
-   * nothing — books floating in mid-air, which is the one thing a bookshelf
-   * must not look like.
+   * Zero for anything on a board. Non-zero only for unfiled notes lying in the
+   * bottom of the case, which is the whole visual difference between filed and
+   * unfiled — a shelf is tidy, the drawer is not.
    */
-  planks: number[];
+  lean: number;
+}
+
+/**
+ * One storage surface: a folder's board, or the plinth for unfiled notes.
+ *
+ * The unit the whole layout is built from, and the reason the rules hold. A
+ * folder gets one; the vault root gets one for free, because the case has a
+ * floor.
+ */
+export interface Compartment {
+  /** Vault path of the folder. `""` is the vault root, on the floor. */
+  path: string;
+  label: string;
+  /** Nesting depth. `0` for the floor and for top-level folders. */
+  depth: number;
+  isFloor: boolean;
+  /** The surface books stand on: the top face of the board, or of the plinth. */
+  surfaceY: number;
+  /** Where this compartment's books may go, after the indent for its depth. */
+  x: number;
+  w: number;
+  /** Clear height above the surface, up to whatever is over it. */
+  h: number;
   books: Book[];
 }
 
+/** One interior board. There is exactly one per folder. */
+export interface Board {
+  /** The top face — the surface its folder's books stand on. */
+  y: number;
+  x: number;
+  w: number;
+}
+
+/** The piece of furniture. */
+export interface Bookcase {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** The interior box: inside the sides, below the top, above the plinth. */
+  innerX: number;
+  innerY: number;
+  innerW: number;
+  innerH: number;
+  /** The top face of the plinth — the ground unfiled notes stand on. */
+  floorY: number;
+  boards: Board[];
+  compartments: Compartment[];
+}
+
 export interface Layout {
-  shelves: Shelf[];
-  /** World bounds, for fitting the view. */
+  bookcase: Bookcase;
+  /** World bounds, for fitting the view. Includes the top's overhang. */
   width: number;
   height: number;
 }
 
 export interface LayoutOptions {
-  /** Wrap a shelf once it passes this many world units wide. */
-  maxShelfWidth: number;
   /** Vertical rhythm multiplier — the density control. */
   density: number;
   sort: "name" | "size" | "recent";
   showEmpty: boolean;
-  /**
-   * How many bays stand side by side. `"auto"` fits the window.
-   *
-   * Stacking every folder in one column was the layout's real defect: a vault
-   * of six folders came out roughly 220 units wide and 740 tall, so in any
-   * normal window the view had to shrink it to a third of the height to fit —
-   * a thin strip down the middle with the whole width empty either side. That
-   * is the "still small" complaint, and no amount of camera work fixes it,
-   * because the shape being framed is the wrong shape. A real bookcase puts
-   * bays side by side.
-   */
-  columns: number | "auto";
-  /** Window aspect, used only to choose `columns` when it is `"auto"`. */
-  aspect: number;
 }
 
 export const DEFAULT_LAYOUT: LayoutOptions = {
-  // Narrower than a window on purpose: past this a folder's books wrap into a
-  // second row of the same bay, which keeps one enormous folder from setting
-  // the width of every column.
-  maxShelfWidth: 640,
   density: 1,
   sort: "name",
   showEmpty: true,
-  columns: "auto",
-  aspect: 16 / 9,
 };
 
-const INDENT = 34;
+// ── The furniture, in layout units ──────────────────────────────────────────
+/** How far a nested folder's books and name step in from the interior edge. */
+export const INDENT = 34;
 const BOOK_H = 76;
 const BOOK_GAP = 3;
-const ROW_GAP = 10;
-const SHELF_PAD_TOP = 26; // room for the folder label above the books
-const SHELF_GAP = 26;
-const COLUMN_GAP = 54;
-const MIN_W = 190;
-/** More than this and the bays are too narrow to read whatever the window. */
-const MAX_COLUMNS = 6;
+/** Clear height of one compartment. Books take `BOOK_H`; the rest is headroom. */
+const BAY_H = 110;
+
+export const CASE_SIDE = 20;
+export const CASE_TOP = 22;
+export const PLINTH = 52;
+export const BOARD_T = 14;
+/** The top panel is wider than the case, as on the reference. */
+export const OVERHANG = 7;
+
+/**
+ * The interior widens to hold the fullest folder before anything is squeezed,
+ * within these bounds. The lower one is what keeps a five-note vault looking
+ * like a bookcase rather than a plank; the upper one is what stops a
+ * five-hundred-note folder turning it into a wall you have to pan along.
+ */
+const MIN_INNER = 620;
+const MAX_INNER = 1400;
+
+/**
+ * A bookcase is a piece of furniture before it is a container, and furniture
+ * does not shrink to fit what you put in it.
+ *
+ * Without this, a vault with no folders came out 674 wide and 184 tall — a shoe
+ * rack with some notes in it, not the empty bookcase the rules describe. The
+ * case is now always at least this many bays tall, and the shortfall goes to
+ * the floor compartment: the empty space *above* the loose notes is the part of
+ * the case you have not put a shelf in yet, which is exactly what it is.
+ */
+const MIN_BAYS = 5;
+
+/** Small enough to be a hairline, large enough not to be a degenerate matrix. */
+const MIN_SPINE = 0.02;
+
+/** How far an unfiled note may lean, in radians. About six degrees. */
+const MAX_LEAN = 0.105;
 
 /**
  * Spine width from note length.
@@ -119,6 +178,9 @@ const MAX_COLUMNS = 6;
  * A zero-byte note gets the floor rather than nothing. They exist — two of them
  * are in the Phase 0 fixture — and a book you cannot see is a note you cannot
  * click.
+ *
+ * This is a book's *natural* width. A shelf too full for its books scales every
+ * one of them by a single factor, so the relative sizes survive.
  */
 export function spineWidth(size: number): number {
   const w = 9 + Math.pow(Math.max(size, 0), 0.25) * 2.4;
@@ -136,85 +198,51 @@ function isNote(e: TreeEntry): boolean {
 }
 
 /**
- * A top-level folder and everything under it, laid out from its own origin.
+ * A stable number in −1..1 from a note's path.
  *
- * The unit the columns are packed from. A subtree is kept whole because that is
- * what makes indentation mean anything: a child shelf reads as belonging to the
- * shelf above it, and splitting a folder across a column break would put a
- * child at the top of the next column with nothing above it to be indented
- * *from*.
+ * The lean has to be the same every time the same vault is drawn, or unfiled
+ * notes would reshuffle on every keystroke that refreshes the tree — which
+ * reads as a bug rather than as mess. FNV-1a, because it is six lines and needs
+ * no dependency.
  */
-interface Group {
-  shelves: Shelf[];
-  w: number;
-  h: number;
-}
-
-/** Where each group ends up, and how big the case is. Arithmetic only. */
-interface Packing {
-  colW: number;
-  at: Array<{ col: number; y: number }>;
-  width: number;
-  height: number;
-}
-
-function packing(groups: Group[], cols: number, density: number): Packing {
-  const gap = SHELF_GAP * density;
-  const colW = Math.max(MIN_W, ...groups.map((g) => g.w));
-  const total = groups.reduce((a, g) => a + g.h + gap, 0) - gap;
-  const target = total / cols;
-
-  const heights = new Array<number>(cols).fill(0);
-  const at: Array<{ col: number; y: number }> = [];
-
-  let col = 0;
-  for (const g of groups) {
-    // Break to the next column once this one has had its share — but never on
-    // an empty column, or a single group taller than the target would push
-    // every later one sideways and leave a hole.
-    if (col < cols - 1 && heights[col]! > 0 && heights[col]! + g.h > target) col++;
-    at.push({ col, y: heights[col]! });
-    heights[col] = heights[col]! + g.h + gap;
+function jitter(path: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < path.length; i++) {
+    h ^= path.charCodeAt(i);
+    h = Math.imul(h, 16777619);
   }
+  return ((h >>> 0) % 2001) / 1000 - 1;
+}
 
-  const used = heights.filter((h) => h > 0).length;
-  return {
-    colW,
-    at,
-    width: used * colW + Math.max(0, used - 1) * COLUMN_GAP,
-    height: Math.max(0, Math.max(...heights) - gap),
-  };
+/** What a compartment will be built from, before any geometry exists. */
+interface Plan {
+  path: string;
+  label: string;
+  depth: number;
+  isFloor: boolean;
+  notes: TreeEntry[];
+  /** The width these books want, at their natural spine widths. */
+  natural: number;
+}
+
+function naturalWidth(notes: TreeEntry[]): number {
+  if (notes.length === 0) return 0;
+  let w = 0;
+  for (const n of notes) w += spineWidth(n.size) + BOOK_GAP;
+  return w - BOOK_GAP;
 }
 
 /**
- * How many columns best match the window.
+ * Lay the whole vault out as one bookcase.
  *
- * Scored on log-aspect so being twice as wide as the window is penalised the
- * same as being half as wide, and ties go to fewer columns — one tall bookcase
- * is easier to read than two short ones when neither fits better.
- */
-function fitColumns(groups: Group[], density: number, aspect: number): number {
-  let best = 1;
-  let bestScore = Infinity;
-  for (let c = 1; c <= Math.min(MAX_COLUMNS, groups.length); c++) {
-    const p = packing(groups, c, density);
-    if (p.height <= 0 || p.width <= 0) continue;
-    const score = Math.abs(Math.log(p.width / p.height / Math.max(aspect, 0.05)));
-    if (score < bestScore - 1e-9) {
-      bestScore = score;
-      best = c;
-    }
-  }
-  return best;
-}
-
-/**
- * Lay the whole vault out as a bookcase.
+ * Depth-first over folders, so a child's board sits directly beneath its
+ * parent's and its books step in one indent — the arrangement that makes depth
+ * legible without drawing a single connecting line. The floor comes last,
+ * because unfiled notes belong at the bottom of the case.
  *
- * Depth-first over folders so a child shelf sits directly beneath its parent
- * and indented from it — the arrangement that makes depth legible without
- * drawing a single connecting line — and then those subtrees are packed into
- * columns so the case is roughly the shape of the window it has to fit in.
+ * One case, always. Splitting a tall vault across two would mean X folders
+ * stopped being X boards — every extra case brings its own floor — and the
+ * rules are the point.
  */
 export function layout(tree: TreeView, vaultName: string, opts: LayoutOptions): Layout {
   const entries = tree.entries;
@@ -229,7 +257,7 @@ export function layout(tree: TreeView, vaultName: string, opts: LayoutOptions): 
     else childrenOf.set(p, [i]);
   }
 
-  const booksIn = (idx: number): TreeEntry[] => {
+  const notesIn = (idx: number): TreeEntry[] => {
     const notes = (childrenOf.get(idx) ?? []).map((i) => entries[i]!).filter(isNote);
     notes.sort((a, b) => {
       if (opts.sort === "size") return b.size - a.size;
@@ -247,134 +275,149 @@ export function layout(tree: TreeView, vaultName: string, opts: LayoutOptions): 
       .filter(({ e }) => e.is_dir)
       .sort((a, b) => a.e.name.localeCompare(b.e.name, undefined, { sensitivity: "base" }));
 
-  /** One folder as a shelf, `top` units down from its group's origin. */
-  const shelfFor = (
-    folderIdx: number,
-    path: string,
-    label: string,
-    depth: number,
-    top: number,
-  ): Shelf | null => {
-    const notes = booksIn(folderIdx);
-    if (notes.length === 0 && !opts.showEmpty && depth > 0) return null;
+  // ── One plan per folder, then the floor ───────────────────────────────────
+  const plans: Plan[] = [];
 
-    const x = depth * INDENT;
-    const books: Book[] = [];
-
-    let bx = 0;
-    let row = 0;
-    const rowH = (BOOK_H + ROW_GAP) * opts.density;
-    for (const n of notes) {
-      const w = spineWidth(n.size);
-      if (bx > 0 && bx + w > opts.maxShelfWidth) {
-        row++;
-        bx = 0;
+  const walk = (parentIdx: number, depth: number) => {
+    for (const { i, e } of foldersUnder(parentIdx)) {
+      const notes = notesIn(i);
+      if (notes.length > 0 || opts.showEmpty) {
+        plans.push({
+          path: e.path,
+          label: e.name,
+          depth,
+          isFloor: false,
+          notes,
+          natural: naturalWidth(notes),
+        });
       }
+      walk(i, depth + 1);
+    }
+  };
+  walk(-1, 0);
+
+  const loose = notesIn(-1);
+  plans.push({
+    path: "",
+    label: vaultName,
+    depth: 0,
+    isFloor: true,
+    notes: loose,
+    natural: naturalWidth(loose),
+  });
+
+  // ── Size the case ─────────────────────────────────────────────────────────
+  // Wide enough for the fullest folder if it can be, so nothing is squeezed
+  // that does not have to be.
+  const wanted = Math.max(0, ...plans.map((p) => p.depth * INDENT + p.natural));
+  const innerW = Math.round(Math.min(MAX_INNER, Math.max(MIN_INNER, wanted)));
+
+  const bayH = BAY_H * opts.density;
+  const bookH = BOOK_H * opts.density;
+  const caseX = OVERHANG;
+  const innerX = caseX + CASE_SIDE;
+
+  // How much taller the case has to be than its contents need, all of which
+  // becomes headroom over the loose notes at the bottom.
+  const natural = plans.length * bayH + (plans.length - 1) * BOARD_T;
+  const smallest = MIN_BAYS * bayH + (MIN_BAYS - 1) * BOARD_T;
+  const headroom = Math.max(0, smallest - natural);
+
+  // ── Fill it, top down ─────────────────────────────────────────────────────
+  const compartments: Compartment[] = [];
+  const boards: Board[] = [];
+  let y = CASE_TOP;
+
+  for (const p of plans) {
+    const indent = p.depth * INDENT;
+    const x = innerX + indent;
+    const w = innerW - indent;
+    const h = p.isFloor ? bayH + headroom : bayH;
+    const surfaceY = y + h;
+
+    // Every book fits. A shelf whose books want more room than it has scales
+    // all of them by one factor, so a long note stays visibly wider than a stub
+    // — the size signal survives the squeeze, which it would not if each book
+    // were clamped on its own.
+    const scale = p.natural > w && p.natural > 0 ? w / p.natural : 1;
+
+    const books: Book[] = [];
+    let bx = 0;
+    for (const n of p.notes) {
+      const bw = Math.max(MIN_SPINE, spineWidth(n.size) * scale);
       books.push({
         path: n.path,
         label: labelOf(n.name),
         isCanvas: n.name.endsWith(".canvas"),
         size: n.size,
         x: x + bx,
-        y: top + SHELF_PAD_TOP + row * rowH,
-        w,
-        h: BOOK_H * opts.density,
+        y: surfaceY - bookH,
+        w: bw,
+        h: bookH,
+        lean: p.isFloor ? jitter(n.path) * MAX_LEAN : 0,
       });
-      bx += w + BOOK_GAP;
+      bx += bw + BOOK_GAP * scale;
     }
 
-    const rows = row + 1;
-    const usedW = books.length ? Math.max(...books.map((b) => b.x + b.w)) - x : 0;
-    const w = Math.max(MIN_W, usedW);
-    const h = SHELF_PAD_TOP + rows * (BOOK_H * opts.density) + (rows - 1) * ROW_GAP * opts.density;
+    compartments.push({
+      path: p.path,
+      label: p.label,
+      depth: p.depth,
+      isFloor: p.isFloor,
+      surfaceY,
+      x,
+      w,
+      h,
+      books,
+    });
 
-    // A plank under each row, exactly where that row's books end.
-    const planks: number[] = [];
-    for (let r = 0; r < rows; r++) {
-      planks.push(top + SHELF_PAD_TOP + r * rowH + BOOK_H * opts.density);
+    if (p.isFloor) {
+      // The plinth is the surface, and the case ends below it.
+      y = surfaceY;
+    } else {
+      boards.push({ y: surfaceY, x: innerX, w: innerW });
+      y = surfaceY + BOARD_T;
     }
-
-    return { path, label, depth, x, y: top, w, h, planks, books };
-  };
-
-  const groupFor = (
-    folderIdx: number,
-    path: string,
-    label: string,
-    depth: number,
-    descend: boolean,
-  ): Group => {
-    const shelves: Shelf[] = [];
-    let y = 0;
-
-    const add = (idx: number, p: string, l: string, d: number) => {
-      const s = shelfFor(idx, p, l, d, y);
-      if (!s) return;
-      shelves.push(s);
-      y += s.h + SHELF_GAP * opts.density;
-    };
-
-    add(folderIdx, path, label, depth);
-    if (descend) {
-      const walk = (parentIdx: number, d: number) => {
-        for (const { i, e } of foldersUnder(parentIdx)) {
-          add(i, e.path, e.name, d);
-          walk(i, d + 1);
-        }
-      };
-      walk(folderIdx, depth + 1);
-    }
-
-    return {
-      shelves,
-      w: shelves.length ? Math.max(...shelves.map((s) => s.x + s.w)) : MIN_W,
-      h: Math.max(0, y - SHELF_GAP * opts.density),
-    };
-  };
-
-  // The vault root is its own bay — the notes that live in no folder — and each
-  // top-level folder brings its whole subtree as one.
-  const groups: Group[] = [groupFor(-1, "", vaultName, 0, false)];
-  for (const { i, e } of foldersUnder(-1)) {
-    const g = groupFor(i, e.path, e.name, 1, true);
-    if (g.shelves.length) groups.push(g);
   }
 
-  const cols =
-    opts.columns === "auto"
-      ? fitColumns(groups, opts.density, opts.aspect)
-      : Math.max(1, Math.min(MAX_COLUMNS, Math.round(opts.columns)));
-  const p = packing(groups, cols, opts.density);
+  const floorY = y;
+  const caseW = CASE_SIDE * 2 + innerW;
+  const caseH = floorY + PLINTH;
 
-  const shelves: Shelf[] = [];
-  groups.forEach((g, gi) => {
-    const { col, y: dy } = p.at[gi]!;
-    const dx = col * (p.colW + COLUMN_GAP);
-    for (const s of g.shelves) {
-      shelves.push({
-        ...s,
-        x: s.x + dx,
-        y: s.y + dy,
-        // Every plank in a column runs out to the same edge. Sized to its own
-        // books they end raggedly, which reads as a pile of unrelated boards
-        // rather than a bookcase — and it makes a short shelf a smaller drop
-        // target than a long one for no reason a person could guess.
-        w: Math.max(s.w, p.colW - s.x),
-        planks: s.planks.map((v) => v + dy),
-        books: s.books.map((b) => ({ ...b, x: b.x + dx, y: b.y + dy })),
-      });
-    }
-  });
-
-  return { shelves, width: p.width, height: p.height };
+  return {
+    bookcase: {
+      x: caseX,
+      y: 0,
+      w: caseW,
+      h: caseH,
+      innerX,
+      innerY: CASE_TOP,
+      innerW,
+      innerH: floorY - CASE_TOP,
+      floorY,
+      boards,
+      compartments,
+    },
+    width: caseW + OVERHANG * 2,
+    height: caseH,
+  };
 }
 
-/** The shelf a world point falls on, or `null`. Used to pick a drop target. */
-export function shelfAt(l: Layout, x: number, y: number): Shelf | null {
-  for (const s of l.shelves) {
-    if (y >= s.y && y <= s.y + s.h && x >= s.x - 12 && x <= s.x + Math.max(s.w, MIN_W) + 12) {
-      return s;
-    }
+/**
+ * The compartment a point falls in, or `null`. Used to pick a drop target.
+ *
+ * Spans the full interior width rather than only where the books are, so an
+ * empty shelf is as easy to drop onto as a full one — and the floor is a target
+ * too, which is how a note gets moved back out to the vault root.
+ */
+export function compartmentAt(l: Layout, x: number, y: number): Compartment | null {
+  const c = l.bookcase;
+  if (x < c.innerX - 8 || x > c.innerX + c.innerW + 8) return null;
+  for (const comp of c.compartments) {
+    // From the surface up through the clear height above it. Deliberately not
+    // the indented span: dropping to the left of an indented shelf still means
+    // that shelf, because nothing else is there.
+    if (y <= comp.surfaceY && y >= comp.surfaceY - comp.h) return comp;
   }
   return null;
 }
@@ -391,7 +434,7 @@ export interface Live {
  * Move one book a frame closer to where it belongs.
  *
  * Extracted from the draw loop so the accessibility gate is *testable*. CSS
- * transitions inherit `--arc-motion` for free; a canvas loop does not, and
+ * transitions inherit `--arc-motion` for free; a frame loop does not, and
  * "motion 0 stops every animation" is a gate rather than a preference — so it
  * needs to be something a test can assert rather than something someone
  * squints at.

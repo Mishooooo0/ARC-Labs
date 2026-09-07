@@ -1,30 +1,30 @@
 <script lang="ts">
   /**
-   * The library, in three dimensions.
+   * The bookcase, in three dimensions.
    *
    * Everything inside a Threlte `<Canvas>` lives here, because Threlte's
    * context only exists below it. The host owns the DOM, the HUD and the
    * interaction state; this owns the scene.
    *
-   * ## Dimensional, not decorative
+   * ## A box first, boards second
    *
-   * Real geometry and real light: books with thickness, planks with a visible
-   * edge, one key light and a soft fill. No wood grain, no coloured cloth, no
-   * warm lamps. The token file's stated direction is "an oscilloscope, not a
-   * spaceship cockpit — no neon, no glow, no gradients", and a photoreal
-   * library would read as a different product bolted onto this one. Depth is
-   * what makes a bookshelf legible as a bookshelf; texture is what would make
-   * it someone else's.
+   * The version before this drew a plank per folder with a stub upright at the
+   * left end of each — every board its own object, nothing enclosing anything,
+   * which is why it read as a diagram of a bookshelf rather than a bookshelf.
+   * A bookcase is a carcass: two sides, a top with a lip, a back panel and a
+   * plinth. The boards are what goes *in* it, and the plinth is the ground
+   * unfiled notes lie on.
    *
-   * Every colour still comes from `tokens.css`, so the light and terminal
-   * themes are correct without a second palette.
+   * The back panel earns its place twice. It closes the box, and it is what
+   * stops you reaching through the case from behind once the view can be
+   * rotated the whole way round.
    *
    * ## Why books are instanced, and driven by hand
    *
    * A 5,000-note vault is 5,000 boxes. As individual meshes that is 5,000 draw
    * calls and the interactivity gate is gone; as one `InstancedMesh` it is one.
-   * Planks stay ordinary meshes — there are tens of them, and they have to be
-   * raycast individually to work as drop targets.
+   * The carcass and the boards stay ordinary meshes — there are a handful, and
+   * they have to be raycast individually to work as drop targets.
    *
    * The instance matrices are written in the frame loop rather than declared as
    * 5,000 `<Instance>` components. Declared, every animated frame is 5,000
@@ -39,8 +39,8 @@
    * web worker spawned from a `blob:` URL. This app's CSP is `script-src
    * 'self'` with no `worker-src`, so the browser refuses that worker and every
    * label silently fails to appear — which is exactly what happened on the
-   * first render. Widening a security policy that exists to enforce constraint
-   * 3, for cosmetics, is the wrong trade.
+   * first 3D render. Widening a security policy that exists to enforce
+   * constraint 3, for cosmetics, is the wrong trade.
    *
    * So labels are projected to screen coordinates here and drawn as DOM by the
    * host. That is better on its own merits: the text is real, so it is
@@ -51,14 +51,25 @@
   import { T, useTask, useThrelte } from "@threlte/core";
   import { interactivity, OrbitControls } from "@threlte/extras";
   import { Color, InstancedMesh, Object3D, Vector3 } from "three";
-  import type { Book, Layout, Shelf } from "../lib/shelves";
+  import type { Book, Compartment, Layout } from "../lib/shelves";
   import { stepToward, type Live } from "../lib/shelves";
   import type { ScreenLabel } from "../lib/scene";
-  import { BOOK_DEPTH, bookBox, endBox, labelPoint, plankBox, PLANK_DEPTH, SCALE } from "../lib/scene";
+  import {
+    boardBox,
+    bookPose,
+    BOOK_Z,
+    caseParts,
+    labelPoint,
+    spineEnds,
+    SCALE,
+  } from "../lib/scene";
+  import type { Finish } from "../lib/finishes";
+  import { grainTexture } from "../lib/grain";
 
   let {
     model,
-    palette,
+    finish,
+    accent,
     selected,
     hovered,
     held,
@@ -68,6 +79,7 @@
     camera,
     motion,
     controls,
+    resetKey,
     onhover,
     onpick,
     ondrag,
@@ -75,13 +87,15 @@
     onsize,
   }: {
     model: Layout;
-    palette: Record<string, string>;
+    finish: Finish;
+    /** `--arc-accent`, for hover and the highlighted drop target. */
+    accent: string;
     selected: string | null;
     hovered: Book | null;
     held: Book | null;
     /** Where the held book currently is, in world units. */
     heldAt: { x: number; y: number } | null;
-    target: Shelf | null;
+    target: Compartment | null;
     /** Books worth a spine title. */
     labelled: Book[];
     camera: { x: number; y: number; z: number };
@@ -98,6 +112,8 @@
     motion: number;
     /** Off while a book is in hand, or the camera fights the drag. */
     controls: boolean;
+    /** Bumped to put the view back where it started. */
+    resetKey: number;
     onhover: (b: Book | null) => void;
     onpick: (b: Book) => void;
     ondrag: (world: { x: number; y: number }) => void;
@@ -120,6 +136,12 @@
 
   const ctx = useThrelte();
   const v = new Vector3();
+  const forward = new Vector3();
+
+  const grainUp = grainTexture(false);
+  const grainAcross = grainTexture(true);
+
+  const parts = $derived(caseParts(model.bookcase));
 
   /**
    * Labels only move when the camera moves or the layout changes, and rebuilding
@@ -138,7 +160,7 @@
   const dummy = new Object3D();
   const colour = new Color();
 
-  const books = $derived(model.shelves.flatMap((s) => s.books));
+  const books = $derived(model.bookcase.compartments.flatMap((c) => c.books));
 
   /**
    * Where each book is *now*, as against where the layout wants it.
@@ -165,9 +187,34 @@
     void selected;
     void target;
     void held;
-    void palette;
+    void finish;
+    void accent;
     dirty = true;
   });
+
+  function colourOf(b: Book): string {
+    if (selected === b.path || hovered?.path === b.path) return accent;
+    return b.isCanvas ? finish.bookAlt : finish.book;
+  }
+
+  /**
+   * Where a book is *this frame*, part-way through rising onto its shelf.
+   *
+   * One function because the drawing and the label have to agree about it. They
+   * did not: the label used the book's final size and simply refused to appear
+   * until the spawn finished. Any interruption then left a bookcase with no
+   * names on it — and `requestAnimationFrame` stops while a tab is in the
+   * background, so \"interrupted\" is just \"switched away and came back\".
+   *
+   * A book grows about its foot. The foot is `y + h`, so a shorter book has to
+   * start further down, or it rises off its own shelf as it grows.
+   */
+  function livePose(b: Book): Book {
+    const l = live.get(b.path);
+    if (!l) return b;
+    const h = b.h * Math.max(0.02, l.spawn);
+    return { ...b, x: l.x, y: l.y + b.h - h, h };
+  }
 
   /**
    * Write every book's matrix and colour. Returns whether anything is still
@@ -195,13 +242,12 @@
         // later book keeps its instance index.
         dummy.scale.set(0, 0, 0);
         dummy.position.set(0, 0, 0);
+        dummy.rotation.set(0, 0, 0);
       } else {
-        // Growing upward off the plank it stands on, so its feet never leave.
-        const grow = Math.max(0.02, l.spawn);
-        const foot = -(l.y + b.h) / SCALE;
-        const h = (b.h * grow) / SCALE;
-        dummy.position.set((l.x + b.w / 2) / SCALE, foot + h / 2, 0);
-        dummy.scale.set(b.w / SCALE, h, BOOK_DEPTH);
+        const pose = bookPose(livePose(b));
+        dummy.position.set(pose.x, pose.y, pose.z);
+        dummy.rotation.set(0, 0, pose.lean);
+        dummy.scale.set(pose.w, pose.h, pose.d);
       }
       dummy.updateMatrix();
       m.setMatrixAt(i, dummy.matrix);
@@ -250,6 +296,18 @@
     if (!dirty) return;
     dirty = false;
 
+    /*
+      Is the case being looked at from the front?
+
+      DOM labels have no idea the back panel exists — they are drawn over the
+      canvas, not in it — so from behind the case every shelf name and every
+      spine would print straight through the wood. The camera looks down its own
+      −Z, so a camera in front of the case has a forward vector pointing away
+      from +Z.
+    */
+    cam.getWorldDirection(forward);
+    const fromFront = forward.z < -0.08;
+
     const out: ScreenLabel[] = [];
 
     /** A world point in screen pixels, or `null` if it is not on screen. */
@@ -263,80 +321,113 @@
       return { x: sx, y: sy };
     };
 
-    for (const shelf of model.shelves) {
-      const l = labelPoint(shelf);
-      const at = project(l.x, l.y, l.z);
-      if (!at) continue;
-      // How much room the name has, measured the way it is drawn: from the left
-      // end of the plank to the right end of it.
-      const right = project(l.x + Math.max(shelf.w, 40) / SCALE, l.y, l.z);
-      out.push({
-        key: `s:${shelf.path}`,
-        text: shelf.label,
-        sub: shelf.books.length === 0 ? "empty" : String(shelf.books.length),
-        kind: target?.path === shelf.path ? "shelf-target" : "shelf",
-        x: at.x,
-        y: at.y,
-        len: right ? Math.abs(right.x - at.x) : 200,
-      });
-    }
+    if (fromFront) {
+      for (const comp of model.bookcase.compartments) {
+        const l = labelPoint(comp);
+        const at = project(l.x, l.y, l.z);
+        if (!at) continue;
+        // How much room the name has, measured the way it is drawn: from the
+        // left end of its span to the right end of it.
+        const right = project(l.x + comp.w / SCALE, l.y, l.z);
+        out.push({
+          key: `s:${comp.path}`,
+          text: comp.isFloor ? `${comp.label} · loose` : comp.label,
+          sub: comp.books.length === 0 ? "empty" : String(comp.books.length),
+          kind: target?.path === comp.path ? "shelf-target" : "shelf",
+          x: at.x,
+          y: at.y,
+          len: right ? Math.abs(right.x - at.x) : 200,
+          angle: 0,
+        });
+      }
 
-    for (const b of labelled) {
-      if (held?.path === b.path) continue;
-      // A book still rising onto its shelf gets no title yet: it is the wrong
-      // height, and a name sliding up the screen reads as a glitch.
-      const l = live.get(b.path);
-      if (l && l.spawn < 1) continue;
-      const box = bookBox(l ? { ...b, x: l.x, y: l.y } : b);
-      const at = project(box.x, box.y, PLANK_DEPTH / 2);
-      if (!at) continue;
-      // A spine title reads along the book, so its room is the book's height on
-      // screen — which shrinks with distance, and below a few characters' worth
-      // a label is a smear rather than a word.
-      const top = project(box.x, box.y + box.h / 2, PLANK_DEPTH / 2);
-      const len = top ? Math.abs(at.y - top.y) * 2 : 0;
-      if (len < 26) continue;
-      // And the spine has to be thick enough to hold a line of text across it,
-      // or the title sits on the two books either side of the one it names.
-      const side = project(box.x + box.w / 2, box.y, PLANK_DEPTH / 2);
-      if (!side || Math.abs(side.x - at.x) * 2 < 11) continue;
-      out.push({ key: `b:${b.path}`, text: b.label, kind: "spine", x: at.x, y: at.y, len });
+      for (const b of labelled) {
+        if (held?.path === b.path) continue;
+
+        // The book as it is right now, not as it will be. A name that waits for
+        // the spawn to finish never appears at all if the spawn is interrupted,
+        // and it grows out of the shelf with its book this way instead.
+        const at = livePose(b);
+        const ends = spineEnds(at);
+        const foot = project(ends.foot[0], ends.foot[1], ends.foot[2]);
+        const head = project(ends.head[0], ends.head[1], ends.head[2]);
+        if (!foot || !head) continue;
+
+        // Along the book's *projected* axis, which is only straight up the
+        // screen when you are looking at the case head-on — and the whole point
+        // of being able to walk around it is that usually you are not.
+        const dx = head.x - foot.x;
+        const dy = head.y - foot.y;
+        const len = Math.hypot(dx, dy);
+        if (len < 26) continue;
+
+        // And the spine has to be thick enough to hold a line of text across
+        // it, or the title sits on the two books either side of the one it
+        // names.
+        const pose = bookPose(at);
+        const side = project(pose.x + pose.w / 2, pose.y, pose.z + pose.d / 2);
+        const mid = project(pose.x, pose.y, pose.z + pose.d / 2);
+        if (!side || !mid || Math.hypot(side.x - mid.x, side.y - mid.y) * 2 < 11) continue;
+
+        out.push({
+          key: `b:${b.path}`,
+          text: b.label,
+          kind: "spine",
+          x: (foot.x + head.x) / 2,
+          y: (foot.y + head.y) / 2,
+          len,
+          // Text reads from the foot upward, so the angle is that of the
+          // foot→head vector turned into screen degrees.
+          angle: (Math.atan2(dy, dx) * 180) / Math.PI,
+        });
+      }
     }
 
     onlabels(out);
   });
 
-  function colourOf(b: Book): string {
-    if (selected === b.path || hovered?.path === b.path) return palette.accent!;
-    return b.isCanvas ? palette.canvasBook! : palette.book!;
-  }
-
-  // Big enough to catch the pointer anywhere the library reaches, plus room to
+  // Big enough to catch the pointer anywhere the case reaches, plus room to
   // drag past its edges.
   const planeW = $derived(Math.max(model.width / SCALE, 4) * 3);
   const planeH = $derived(Math.max(model.height / SCALE, 4) * 3);
 </script>
 
-<T.PerspectiveCamera makeDefault fov={42} position={[camera.x, camera.y, camera.z]} near={0.05}>
-  <!-- Constrained on purpose. Enough rotation for depth to read, not enough to
-       end up behind the shelves wondering which way is out. -->
-  <OrbitControls
-    enabled={controls}
-    enableDamping
-    dampingFactor={0.08}
-    target={[camera.x, camera.y, 0]}
-    minDistance={0.6}
-    maxDistance={Math.max(24, camera.z * 2.5)}
-    minPolarAngle={Math.PI / 2 - 0.42}
-    maxPolarAngle={Math.PI / 2 + 0.3}
-    minAzimuthAngle={-0.55}
-    maxAzimuthAngle={0.55}
-  />
-</T.PerspectiveCamera>
+<!--
+  Re-created when `resetKey` changes, which is the whole of "reset view": a
+  fresh camera and fresh controls start at the framing again. Cheaper and more
+  obviously correct than persuading OrbitControls to forget where it has been.
+-->
+{#key resetKey}
+  <T.PerspectiveCamera makeDefault fov={42} position={[camera.x, camera.y, camera.z]} near={0.05}>
+    <!--
+      Free to walk around.
 
-<T.AmbientLight intensity={1.5} color={palette.fg} />
-<T.DirectionalLight position={[-3, 4, 6]} intensity={2.1} color={palette.fg} />
-<T.DirectionalLight position={[4, -2, 3]} intensity={0.5} color={palette.accent} />
+      The azimuth clamp that used to be here (±0.55 rad) is what made this feel
+      bolted to a wall. Only the polar angle is limited now, and only enough to
+      keep you off the floor and off the top panel — from directly overhead a
+      bookcase is a rectangle and nothing about it is legible.
+    -->
+    <OrbitControls
+      enabled={controls}
+      enableDamping
+      enablePan
+      dampingFactor={0.08}
+      target={[camera.x, camera.y, 0]}
+      minDistance={0.4}
+      maxDistance={Math.max(24, camera.z * 3)}
+      minPolarAngle={0.15}
+      maxPolarAngle={1.75}
+    />
+  </T.PerspectiveCamera>
+{/key}
+
+<T.AmbientLight intensity={1.35} />
+<!-- Key light from the upper left, as in the reference photograph. -->
+<T.DirectionalLight position={[-3, 4, 6]} intensity={2.0} />
+<!-- A cool fill from the other side, so the right-hand side panel is not black. -->
+<T.DirectionalLight position={[5, -1, 4]} intensity={0.55} />
+<!-- Just enough from behind to separate the case from the ground it floats on. -->
+<T.DirectionalLight position={[-2, 2, -5]} intensity={0.4} />
 
 <!--
   The wall a dragged book slides along.
@@ -344,11 +435,13 @@
   Invisible, and only listening while something is in hand. Letting the
   raycaster project the pointer onto this plane is what avoids hand-rolling an
   unproject: the hit point arrives already in world units, and `layoutPoint`
-  turns it straight back into something `shelfAt` understands.
+  turns it straight back into something `compartmentAt` understands — from any
+  camera angle, because the plane is fixed in the world and the camera is what
+  moves.
 -->
 {#if held}
   <T.Mesh
-    position={[model.width / (SCALE * 2), -model.height / (SCALE * 2), 0]}
+    position={[model.width / (SCALE * 2), -model.height / (SCALE * 2), BOOK_Z]}
     visible={false}
     onpointermove={(e: any) => e.point && ondrag({ x: e.point.x, y: e.point.y })}
   >
@@ -357,32 +450,64 @@
   </T.Mesh>
 {/if}
 
-{#each model.shelves as shelf (shelf.path)}
-  {@const isTarget = target?.path === shelf.path}
-
-  <!-- One plank per row, so wrapped books stand on something. -->
-  {#each shelf.planks as plankY, i (i)}
-    {@const p = plankBox(shelf, plankY)}
-    <T.Mesh position={[p.x, p.y, p.z]}>
-      <T.BoxGeometry args={[p.w, p.h, p.d]} />
-      <T.MeshStandardMaterial
-        color={isTarget ? palette.accent : palette.plank}
-        roughness={0.85}
-        metalness={0}
-      />
-    </T.Mesh>
-  {/each}
-
-  <!-- The upright at the left end: what turns a plank into a bay. -->
-  {@const e = endBox(shelf)}
-  <T.Mesh position={[e.x, e.y, e.z]}>
-    <T.BoxGeometry args={[e.w, e.h, e.d]} />
+<!-- ── The carcass ─────────────────────────────────────────────────────────
+     Sides and top take the grain along their length; the back is in shadow and
+     the plinth is what unfiled notes stand on. -->
+{#each [parts.left, parts.right] as p, i (i)}
+  <T.Mesh position={[p.x, p.y, p.z]}>
+    <T.BoxGeometry args={[p.w, p.h, p.d]} />
     <T.MeshStandardMaterial
-      color={isTarget ? palette.accent : palette.plank}
-      roughness={0.85}
-      metalness={0}
+      color={finish.case}
+      map={grainUp}
+      roughness={0.72}
+      metalness={0.02}
     />
   </T.Mesh>
+{/each}
+
+<T.Mesh position={[parts.top.x, parts.top.y, parts.top.z]}>
+  <T.BoxGeometry args={[parts.top.w, parts.top.h, parts.top.d]} />
+  <T.MeshStandardMaterial
+    color={finish.edge}
+    map={grainAcross}
+    roughness={0.7}
+    metalness={0.02}
+  />
+</T.Mesh>
+
+<T.Mesh position={[parts.back.x, parts.back.y, parts.back.z]}>
+  <T.BoxGeometry args={[parts.back.w, parts.back.h, parts.back.d]} />
+  <T.MeshStandardMaterial color={finish.back} map={grainUp} roughness={0.9} metalness={0} />
+</T.Mesh>
+
+<T.Mesh position={[parts.plinth.x, parts.plinth.y, parts.plinth.z]}>
+  <T.BoxGeometry args={[parts.plinth.w, parts.plinth.h, parts.plinth.d]} />
+  <T.MeshStandardMaterial
+    color={finish.case}
+    map={grainAcross}
+    roughness={0.75}
+    metalness={0.02}
+  />
+</T.Mesh>
+
+<!-- ── The boards. One per folder, and a drop target each. ───────────────── -->
+{#each model.bookcase.compartments as comp, i (comp.path)}
+  {#if !comp.isFloor}
+    <!-- The floor is always last, so a folder's board carries its own index. -->
+    {@const board = model.bookcase.boards[i]}
+    {#if board}
+      {@const b = boardBox(board)}
+      <T.Mesh position={[b.x, b.y, b.z]}>
+        <T.BoxGeometry args={[b.w, b.h, b.d]} />
+        <T.MeshStandardMaterial
+          color={target?.path === comp.path ? accent : finish.board}
+          map={grainAcross}
+          roughness={0.68}
+          metalness={0.02}
+        />
+      </T.Mesh>
+    {/if}
+  {/if}
 {/each}
 
 <!--
@@ -411,27 +536,26 @@
     }}
   >
     <T.BoxGeometry args={[1, 1, 1]} />
-    <T.MeshStandardMaterial roughness={0.62} metalness={0.04} />
+    <T.MeshStandardMaterial roughness={0.66} metalness={0.02} />
   </T.InstancedMesh>
 {/key}
 
 <!--
   The book in your hand.
 
-  Drawn last and without a depth test rather than pushed toward the camera. The
-  lift was the obvious way to keep it clear of the bay it came from, and it was
-  wrong: `heldAt` is where the pointer's ray crosses the wall at z = 0, so any
-  book sitting off that plane is slid away from the cursor by perspective — a
-  few pixels near the middle of the view, more at the edges. You would be aiming
-  at one shelf and dropping onto another. Sitting it on the plane keeps it
-  exactly under the pointer, and drawing it last keeps it visible anyway.
+  Drawn last and without a depth test rather than pushed toward the camera.
+  `heldAt` is where the pointer's ray crosses the book plane, so any book
+  sitting off that plane is slid away from the cursor by perspective — a few
+  pixels near the middle of the view, more at the edges. You would be aiming at
+  one shelf and dropping onto another. Sitting it on the plane keeps it exactly
+  under the pointer, and drawing it last keeps it visible anyway.
 -->
 {#if held && heldAt}
-  {@const box = bookBox(held)}
-  <T.Mesh position={[heldAt.x, heldAt.y, 0]} renderOrder={999}>
-    <T.BoxGeometry args={[box.w, box.h, box.d]} />
+  {@const pose = bookPose(held)}
+  <T.Mesh position={[heldAt.x, heldAt.y, BOOK_Z]} renderOrder={999}>
+    <T.BoxGeometry args={[pose.w, pose.h, pose.d]} />
     <T.MeshStandardMaterial
-      color={palette.accent}
+      color={accent}
       roughness={0.5}
       metalness={0.05}
       depthTest={false}
