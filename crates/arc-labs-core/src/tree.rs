@@ -42,6 +42,15 @@ pub struct TreeEntry {
     pub is_dir: bool,
     /// Index into [`Tree::entries`], or `None` for a top-level entry.
     pub parent: Option<usize>,
+    /// Bytes on disk. `0` for a directory.
+    ///
+    /// Here rather than in the index because the library view draws a note's
+    /// spine width from its length, and it must be able to draw a vault that
+    /// has never been indexed — a fresh one, or one whose index is still
+    /// building. The walk already reads each entry's file type; this is one
+    /// more `metadata()` on the same handle, which Windows answers from the
+    /// directory listing it already had.
+    pub size: u64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -133,6 +142,14 @@ pub fn scan(root: &VaultRoot) -> Result<Tree> {
         };
 
         let is_dir = entry.file_type().is_dir();
+        // A file whose metadata cannot be read still belongs in the tree: the
+        // size is a display detail, and dropping the note because of it would
+        // hide something that exists.
+        let size = if is_dir {
+            0
+        } else {
+            entry.metadata().map(|m| m.len()).unwrap_or(0)
+        };
         if !is_dir {
             if vp.is_markdown() {
                 tree.note_count += 1;
@@ -151,6 +168,7 @@ pub fn scan(root: &VaultRoot) -> Result<Tree> {
             path: vp,
             is_dir,
             parent,
+            size,
         });
     }
 
@@ -170,6 +188,31 @@ mod tests {
         }
         let root = VaultRoot::open(tmp.path()).unwrap();
         (tmp, root)
+    }
+
+    /// The library draws a spine's width from this, so a wrong size is a wrong
+    /// picture — and a zero-byte note is a real thing the fixtures contain.
+    #[test]
+    fn entries_carry_their_size_and_directories_carry_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("Folder")).unwrap();
+        let body = b"# a longer note\n\nwith body\n";
+        std::fs::write(tmp.path().join("Folder/Long.md"), body).unwrap();
+        std::fs::write(tmp.path().join("Empty.md"), b"").unwrap();
+        let root = VaultRoot::open(tmp.path()).unwrap();
+
+        let tree = scan(&root).unwrap();
+        let of = |name: &str| {
+            tree.entries
+                .iter()
+                .find(|e| e.name == name)
+                .unwrap_or_else(|| panic!("no entry {name}"))
+        };
+
+        assert_eq!(of("Long.md").size, body.len() as u64);
+        assert_eq!(of("Empty.md").size, 0, "a zero-byte note is still a note");
+        assert_eq!(of("Folder").size, 0, "a directory has no size of its own");
+        assert!(of("Folder").is_dir);
     }
 
     #[test]

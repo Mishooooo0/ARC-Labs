@@ -15,7 +15,7 @@
    */
   import { transport } from "./lib/transport";
   import type {
-    Backlink, GraphData, IndexStats, NoteRef, NoteView as Note, OutgoingLink,
+    Backlink, IndexStats, NoteRef, NoteView as Note, OutgoingLink,
     ApiVersion, CanvasRunnability, CanvasView, Config, CreateKind, LinkSuggestion, Proposal, RunStatus, SearchHit, Status, Template,
     TagCount, TimelineEntry, TreeView, UnresolvedLink, VaultEvent, WeaveStatus,
   } from "./lib/types";
@@ -28,7 +28,7 @@
   import EmptyState from "./components/EmptyState.svelte";
   import FileTree from "./components/FileTree.svelte";
   import FirstRun from "./components/FirstRun.svelte";
-  import Graph from "./components/Graph.svelte";
+  import Library from "./components/Library.svelte";
   import Ask from "./components/Ask.svelte";
   import Home from "./components/Home.svelte";
   import Inbox from "./components/Inbox.svelte";
@@ -68,8 +68,6 @@
   let backlinks = $state<Backlink[]>([]);
   let outgoing = $state<OutgoingLink[]>([]);
   let contextLoading = $state(false);
-  let graphData = $state<GraphData | null>(null);
-  let graphLoading = $state(false);
 
   // Weave. Inferred links live in their own state, never merged into
   // `outgoing` or `backlinks` — those are observed, and the two must not be
@@ -81,7 +79,9 @@
 
   // The one dialog. `askKind` decides what confirming does, so a stale callback
   // from a dismissed dialog cannot fire against the wrong note.
-  type AskKind = "create" | "rename" | "delete";
+  type AskKind = "create" | "rename" | "delete" | "move";
+  /** Destination folder for a `move`. `""` is the vault root. */
+  let moveInto = $state("");
   let askOpen = $state(false);
   let askKind = $state<AskKind>("create");
   let askTitle = $state("");
@@ -627,7 +627,6 @@
       await loadInbox();
       // The link is real now, so anything showing observed links is stale.
       if (selected) await loadContext(selected);
-      graphData = null;
       if (selected && note) await openNote(selected);
     } catch (e) {
       error = message(e);
@@ -809,6 +808,15 @@
         await transport.renameNote(askTarget, to);
         await refreshTree();
         await openNote(to);
+      } else if (askKind === "move" && askTarget) {
+        const from = askTarget;
+        const name = from.slice(from.lastIndexOf("/") + 1);
+        const to = moveInto ? `${moveInto}/${name}` : name;
+        // `rename_note` refuses to overwrite, so a shelf that already holds
+        // this name raises an error here rather than clobbering anything.
+        await transport.renameNote(from, to);
+        await refreshTree();
+        if (selected === from) await openNote(to);
       } else if (askKind === "delete" && askTarget) {
         const gone = askTarget;
         const out = await transport.deleteNote(gone);
@@ -837,17 +845,38 @@
     }
   }
 
-  async function openGraph() {
+  /**
+   * Open the library.
+   *
+   * No fetch: it draws from the tree, which is already loaded and already
+   * refreshed after every create, rename and delete. That is also why it works
+   * on a vault whose index has not finished building.
+   */
+  function openGraph() {
     view = "graph";
-    if (graphData || graphLoading) return;
-    graphLoading = true;
-    try {
-      graphData = await transport.graph();
-    } catch (e) {
-      error = message(e);
-    } finally {
-      graphLoading = false;
-    }
+  }
+
+  /**
+   * Ask before moving a book to another shelf. The library never moves
+   * anything on its own.
+   *
+   * The two things worth saying are the ones nobody would guess. Wikilinks
+   * resolve by *name*, not path, so a folder move does not break links pointing
+   * at the note — and `record_rename` carries its ledger across the new path,
+   * so its history goes with it.
+   */
+  function askMove(from: string, toFolder: string) {
+    const name = from.slice(from.lastIndexOf("/") + 1);
+    const fromFolder = from.includes("/") ? from.slice(0, from.lastIndexOf("/")) : "the vault root";
+    askKind = "move";
+    askTitle = `Move ${name} to ${toFolder || "the vault root"}?`;
+    askDetail = `From ${fromFolder}. Links to it keep working — they resolve by name, not by folder — and its history moves with it.`;
+    askValue = undefined;
+    askConfirm = "Move it";
+    askDanger = false;
+    askTarget = from;
+    moveInto = toFolder;
+    askOpen = true;
   }
 
   function navigate(target: string, kind: "note" | "tag" | "embed") {
@@ -879,7 +908,6 @@
 
   async function reindex() {
     stats = null;
-    graphData = null;
     if (status) status = { ...status, status: "indexing" };
     await refresh();
   }
@@ -1217,14 +1245,21 @@
             onpass={() => void weavePass()}
           />
         {:else if view === "graph"}
-          {#if graphData}
-            <Graph data={graphData} {selected} inferred={suggestions} onopen={openNote} />
+          {#if tree}
+            <!-- The tree, not the graph payload: it carries folders, including
+                 empty ones, and needs no index. A folder you just made is a
+                 shelf immediately, and can be dropped onto. -->
+            <Library
+              {tree}
+              vaultName={status.vault.name}
+              {selected}
+              onopen={openNote}
+              onmove={askMove}
+            />
           {:else}
             <EmptyState
-              title={graphLoading ? "Laying out the graph" : "Graph"}
-              description={graphLoading
-                ? "Placing every note and every link between them. This runs off the main thread, so the rest of the app stays responsive."
-                : "The graph needs the index. It will appear once indexing finishes."}
+              title="Library"
+              description="Reading the vault."
             />
           {/if}
         {:else if isCanvas}

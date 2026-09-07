@@ -71,6 +71,14 @@ export interface TreeEntry {
   name: string;
   is_dir: boolean;
   parent: number | null;
+  /**
+   * Bytes on disk; `0` for a directory.
+   *
+   * The library draws a note's spine width from this. It comes from the tree
+   * rather than the index so the shelves can be drawn for a vault that has
+   * never been indexed.
+   */
+  size: number;
 }
 
 export interface Skipped {
