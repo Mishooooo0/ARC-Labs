@@ -39,10 +39,19 @@ export interface Shelf {
   depth: number;
   x: number;
   y: number;
-  /** Width of the plank — as wide as the books it carries, at least `MIN_W`. */
+  /** Width of the plank. Runs out to the right edge of its column. */
   w: number;
   /** Height of the whole shelf, including every wrapped row. */
   h: number;
+  /**
+   * The y of every plank in this bay, top row first.
+   *
+   * One per *row*, not one per shelf. A shelf whose books wrapped used to draw
+   * a single plank at the bottom, which left every wrapped row standing on
+   * nothing — books floating in mid-air, which is the one thing a bookshelf
+   * must not look like.
+   */
+  planks: number[];
   books: Book[];
 }
 
@@ -60,13 +69,32 @@ export interface LayoutOptions {
   density: number;
   sort: "name" | "size" | "recent";
   showEmpty: boolean;
+  /**
+   * How many bays stand side by side. `"auto"` fits the window.
+   *
+   * Stacking every folder in one column was the layout's real defect: a vault
+   * of six folders came out roughly 220 units wide and 740 tall, so in any
+   * normal window the view had to shrink it to a third of the height to fit —
+   * a thin strip down the middle with the whole width empty either side. That
+   * is the "still small" complaint, and no amount of camera work fixes it,
+   * because the shape being framed is the wrong shape. A real bookcase puts
+   * bays side by side.
+   */
+  columns: number | "auto";
+  /** Window aspect, used only to choose `columns` when it is `"auto"`. */
+  aspect: number;
 }
 
 export const DEFAULT_LAYOUT: LayoutOptions = {
-  maxShelfWidth: 1100,
+  // Narrower than a window on purpose: past this a folder's books wrap into a
+  // second row of the same bay, which keeps one enormous folder from setting
+  // the width of every column.
+  maxShelfWidth: 640,
   density: 1,
   sort: "name",
   showEmpty: true,
+  columns: "auto",
+  aspect: 16 / 9,
 };
 
 const INDENT = 34;
@@ -75,7 +103,10 @@ const BOOK_GAP = 3;
 const ROW_GAP = 10;
 const SHELF_PAD_TOP = 26; // room for the folder label above the books
 const SHELF_GAP = 26;
+const COLUMN_GAP = 54;
 const MIN_W = 190;
+/** More than this and the bays are too narrow to read whatever the window. */
+const MAX_COLUMNS = 6;
 
 /**
  * Spine width from note length.
@@ -105,11 +136,85 @@ function isNote(e: TreeEntry): boolean {
 }
 
 /**
- * Lay the whole vault out as shelves.
+ * A top-level folder and everything under it, laid out from its own origin.
+ *
+ * The unit the columns are packed from. A subtree is kept whole because that is
+ * what makes indentation mean anything: a child shelf reads as belonging to the
+ * shelf above it, and splitting a folder across a column break would put a
+ * child at the top of the next column with nothing above it to be indented
+ * *from*.
+ */
+interface Group {
+  shelves: Shelf[];
+  w: number;
+  h: number;
+}
+
+/** Where each group ends up, and how big the case is. Arithmetic only. */
+interface Packing {
+  colW: number;
+  at: Array<{ col: number; y: number }>;
+  width: number;
+  height: number;
+}
+
+function packing(groups: Group[], cols: number, density: number): Packing {
+  const gap = SHELF_GAP * density;
+  const colW = Math.max(MIN_W, ...groups.map((g) => g.w));
+  const total = groups.reduce((a, g) => a + g.h + gap, 0) - gap;
+  const target = total / cols;
+
+  const heights = new Array<number>(cols).fill(0);
+  const at: Array<{ col: number; y: number }> = [];
+
+  let col = 0;
+  for (const g of groups) {
+    // Break to the next column once this one has had its share — but never on
+    // an empty column, or a single group taller than the target would push
+    // every later one sideways and leave a hole.
+    if (col < cols - 1 && heights[col]! > 0 && heights[col]! + g.h > target) col++;
+    at.push({ col, y: heights[col]! });
+    heights[col] = heights[col]! + g.h + gap;
+  }
+
+  const used = heights.filter((h) => h > 0).length;
+  return {
+    colW,
+    at,
+    width: used * colW + Math.max(0, used - 1) * COLUMN_GAP,
+    height: Math.max(0, Math.max(...heights) - gap),
+  };
+}
+
+/**
+ * How many columns best match the window.
+ *
+ * Scored on log-aspect so being twice as wide as the window is penalised the
+ * same as being half as wide, and ties go to fewer columns — one tall bookcase
+ * is easier to read than two short ones when neither fits better.
+ */
+function fitColumns(groups: Group[], density: number, aspect: number): number {
+  let best = 1;
+  let bestScore = Infinity;
+  for (let c = 1; c <= Math.min(MAX_COLUMNS, groups.length); c++) {
+    const p = packing(groups, c, density);
+    if (p.height <= 0 || p.width <= 0) continue;
+    const score = Math.abs(Math.log(p.width / p.height / Math.max(aspect, 0.05)));
+    if (score < bestScore - 1e-9) {
+      bestScore = score;
+      best = c;
+    }
+  }
+  return best;
+}
+
+/**
+ * Lay the whole vault out as a bookcase.
  *
  * Depth-first over folders so a child shelf sits directly beneath its parent
  * and indented from it — the arrangement that makes depth legible without
- * drawing a single connecting line.
+ * drawing a single connecting line — and then those subtrees are packed into
+ * columns so the case is roughly the shape of the window it has to fit in.
  */
 export function layout(tree: TreeView, vaultName: string, opts: LayoutOptions): Layout {
   const entries = tree.entries;
@@ -124,10 +229,6 @@ export function layout(tree: TreeView, vaultName: string, opts: LayoutOptions): 
     else childrenOf.set(p, [i]);
   }
 
-  const shelves: Shelf[] = [];
-  let cursorY = 0;
-  let widest = MIN_W;
-
   const booksIn = (idx: number): TreeEntry[] => {
     const notes = (childrenOf.get(idx) ?? []).map((i) => entries[i]!).filter(isNote);
     notes.sort((a, b) => {
@@ -140,12 +241,24 @@ export function layout(tree: TreeView, vaultName: string, opts: LayoutOptions): 
     return notes;
   };
 
-  const emit = (folderIdx: number, path: string, label: string, depth: number) => {
+  const foldersUnder = (parentIdx: number) =>
+    (childrenOf.get(parentIdx) ?? [])
+      .map((i) => ({ i, e: entries[i]! }))
+      .filter(({ e }) => e.is_dir)
+      .sort((a, b) => a.e.name.localeCompare(b.e.name, undefined, { sensitivity: "base" }));
+
+  /** One folder as a shelf, `top` units down from its group's origin. */
+  const shelfFor = (
+    folderIdx: number,
+    path: string,
+    label: string,
+    depth: number,
+    top: number,
+  ): Shelf | null => {
     const notes = booksIn(folderIdx);
-    if (notes.length === 0 && !opts.showEmpty && depth > 0) return;
+    if (notes.length === 0 && !opts.showEmpty && depth > 0) return null;
 
     const x = depth * INDENT;
-    const y = cursorY;
     const books: Book[] = [];
 
     let bx = 0;
@@ -163,7 +276,7 @@ export function layout(tree: TreeView, vaultName: string, opts: LayoutOptions): 
         isCanvas: n.name.endsWith(".canvas"),
         size: n.size,
         x: x + bx,
-        y: y + SHELF_PAD_TOP + row * rowH,
+        y: top + SHELF_PAD_TOP + row * rowH,
         w,
         h: BOOK_H * opts.density,
       });
@@ -171,38 +284,89 @@ export function layout(tree: TreeView, vaultName: string, opts: LayoutOptions): 
     }
 
     const rows = row + 1;
-    const usedW = books.length
-      ? Math.max(...books.map((b) => b.x + b.w)) - x
-      : 0;
+    const usedW = books.length ? Math.max(...books.map((b) => b.x + b.w)) - x : 0;
     const w = Math.max(MIN_W, usedW);
     const h = SHELF_PAD_TOP + rows * (BOOK_H * opts.density) + (rows - 1) * ROW_GAP * opts.density;
 
-    shelves.push({ path, label, depth, x, y, w, h, books });
-    widest = Math.max(widest, x + w);
-    cursorY += h + SHELF_GAP * opts.density;
-  };
-
-  // The root shelf first: notes that live directly in the vault.
-  emit(-1, "", vaultName, 0);
-
-  const walk = (parentIdx: number, depth: number) => {
-    const kids = (childrenOf.get(parentIdx) ?? [])
-      .map((i) => ({ i, e: entries[i]! }))
-      .filter(({ e }) => e.is_dir)
-      .sort((a, b) => a.e.name.localeCompare(b.e.name, undefined, { sensitivity: "base" }));
-
-    for (const { i, e } of kids) {
-      emit(i, e.path, e.name, depth);
-      walk(i, depth + 1);
+    // A plank under each row, exactly where that row's books end.
+    const planks: number[] = [];
+    for (let r = 0; r < rows; r++) {
+      planks.push(top + SHELF_PAD_TOP + r * rowH + BOOK_H * opts.density);
     }
-  };
-  walk(-1, 1);
 
-  return {
-    shelves,
-    width: widest,
-    height: Math.max(0, cursorY - SHELF_GAP * opts.density),
+    return { path, label, depth, x, y: top, w, h, planks, books };
   };
+
+  const groupFor = (
+    folderIdx: number,
+    path: string,
+    label: string,
+    depth: number,
+    descend: boolean,
+  ): Group => {
+    const shelves: Shelf[] = [];
+    let y = 0;
+
+    const add = (idx: number, p: string, l: string, d: number) => {
+      const s = shelfFor(idx, p, l, d, y);
+      if (!s) return;
+      shelves.push(s);
+      y += s.h + SHELF_GAP * opts.density;
+    };
+
+    add(folderIdx, path, label, depth);
+    if (descend) {
+      const walk = (parentIdx: number, d: number) => {
+        for (const { i, e } of foldersUnder(parentIdx)) {
+          add(i, e.path, e.name, d);
+          walk(i, d + 1);
+        }
+      };
+      walk(folderIdx, depth + 1);
+    }
+
+    return {
+      shelves,
+      w: shelves.length ? Math.max(...shelves.map((s) => s.x + s.w)) : MIN_W,
+      h: Math.max(0, y - SHELF_GAP * opts.density),
+    };
+  };
+
+  // The vault root is its own bay — the notes that live in no folder — and each
+  // top-level folder brings its whole subtree as one.
+  const groups: Group[] = [groupFor(-1, "", vaultName, 0, false)];
+  for (const { i, e } of foldersUnder(-1)) {
+    const g = groupFor(i, e.path, e.name, 1, true);
+    if (g.shelves.length) groups.push(g);
+  }
+
+  const cols =
+    opts.columns === "auto"
+      ? fitColumns(groups, opts.density, opts.aspect)
+      : Math.max(1, Math.min(MAX_COLUMNS, Math.round(opts.columns)));
+  const p = packing(groups, cols, opts.density);
+
+  const shelves: Shelf[] = [];
+  groups.forEach((g, gi) => {
+    const { col, y: dy } = p.at[gi]!;
+    const dx = col * (p.colW + COLUMN_GAP);
+    for (const s of g.shelves) {
+      shelves.push({
+        ...s,
+        x: s.x + dx,
+        y: s.y + dy,
+        // Every plank in a column runs out to the same edge. Sized to its own
+        // books they end raggedly, which reads as a pile of unrelated boards
+        // rather than a bookcase — and it makes a short shelf a smaller drop
+        // target than a long one for no reason a person could guess.
+        w: Math.max(s.w, p.colW - s.x),
+        planks: s.planks.map((v) => v + dy),
+        books: s.books.map((b) => ({ ...b, x: b.x + dx, y: b.y + dy })),
+      });
+    }
+  });
+
+  return { shelves, width: p.width, height: p.height };
 }
 
 /** The shelf a world point falls on, or `null`. Used to pick a drop target. */
@@ -210,17 +374,6 @@ export function shelfAt(l: Layout, x: number, y: number): Shelf | null {
   for (const s of l.shelves) {
     if (y >= s.y && y <= s.y + s.h && x >= s.x - 12 && x <= s.x + Math.max(s.w, MIN_W) + 12) {
       return s;
-    }
-  }
-  return null;
-}
-
-/** The book at a world point, or `null`. */
-export function bookAt(l: Layout, x: number, y: number): Book | null {
-  for (const s of l.shelves) {
-    if (y < s.y || y > s.y + s.h) continue;
-    for (const b of s.books) {
-      if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) return b;
     }
   }
   return null;

@@ -1,5 +1,47 @@
 # Changelog
 
+## Unreleased
+
+### The graph became a library
+
+The force-directed graph is gone. Folders are shelves, notes are books standing
+on them with a spine width taken from the note's length, and dragging a book to
+another shelf moves the file after a confirm. It draws in 3D, with the layout
+packed into columns so a bookcase is roughly the shape of the window it has to
+fit in rather than a thin strip down the middle.
+
+### A Phase 6 gate surface was removed, deliberately
+
+This is the part worth stating rather than discovering later. The Phase 6 gate
+says an inferred link must be **"distinguishable from a real edge at every zoom
+level"** — dashed, dimmer, blue. That was drawn by the graph, and the graph no
+longer exists.
+
+Weave's suggestions are not gone: they still reach the
+[inbox](ui/src/components/Inbox.svelte), which lists them with their scores and
+sources and still accepts or dismisses each one. What has gone is the *drawn*
+half — nothing plots an inferred edge any more, so "distinguishable at every
+zoom level" is now vacuously true rather than satisfied.
+
+It was removed rather than lost. A shelf has no edges to dash, and the wire
+graph that replaces it will carry *sync* relationships between vaults, which are
+not link guesses and must not be dressed up as them. If inferred links get a
+drawn surface again it will be its own thing, gated again on its own terms.
+
+### Also
+
+- Books are drawn as one `InstancedMesh` written by hand each frame, so a spawn
+  or a settle costs one buffer upload rather than 5,000 component updates.
+- Labels are DOM over the canvas, not geometry. The 3D text library builds its
+  font atlas in a worker spawned from a `blob:` URL, which this app's CSP
+  refuses — and the CSP is there to enforce constraint 3, so it stays as it is.
+  Real text is also the first thing in this view a screen reader can read.
+- `TreeEntry` gained `size`, which is what lets a spine be as wide as its note
+  without waiting for an index.
+- The library is loaded on demand: Three.js and Threlte are 800 KB that a
+  session which never opens the library should not pay for. The entry bundle is
+  unchanged at 420 KB.
+
 ## Lab-0.0.1 — first prototype
 
 The notebook works. Phases 0–6 of the build plan are complete and gated; Phase 7

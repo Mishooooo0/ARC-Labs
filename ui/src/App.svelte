@@ -28,7 +28,6 @@
   import EmptyState from "./components/EmptyState.svelte";
   import FileTree from "./components/FileTree.svelte";
   import FirstRun from "./components/FirstRun.svelte";
-  import Library from "./components/Library.svelte";
   import Ask from "./components/Ask.svelte";
   import Home from "./components/Home.svelte";
   import Inbox from "./components/Inbox.svelte";
@@ -846,14 +845,41 @@
   }
 
   /**
+   * The library component, fetched the first time it is opened.
+   *
+   * Three.js and Threlte together are the largest thing in this bundle by a
+   * long way — more than the editor, the index and the canvas put together —
+   * and plenty of sessions never open the library at all. Loading it on demand
+   * keeps the first paint of the *editor* off that budget, which is the screen
+   * that has a 60-second gate on it. Kept once loaded, so coming back is
+   * instant rather than flashing a loading state every time.
+   *
+   * A failure here is reported rather than swallowed: on a headless server this
+   * is a network fetch, and "the library is blank" with nothing in the console
+   * is the kind of thing that gets diagnosed twice.
+   */
+  let LibraryView = $state<typeof import("./components/Library.svelte").default | null>(null);
+  let libraryError = $state("");
+
+  async function loadLibrary() {
+    if (LibraryView || libraryError) return;
+    try {
+      LibraryView = (await import("./components/Library.svelte")).default;
+    } catch (e) {
+      libraryError = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  /**
    * Open the library.
    *
-   * No fetch: it draws from the tree, which is already loaded and already
-   * refreshed after every create, rename and delete. That is also why it works
-   * on a vault whose index has not finished building.
+   * No fetch for the *data*: it draws from the tree, which is already loaded
+   * and already refreshed after every create, rename and delete. That is also
+   * why it works on a vault whose index has not finished building.
    */
   function openGraph() {
     view = "graph";
+    void loadLibrary();
   }
 
   /**
@@ -1245,11 +1271,16 @@
             onpass={() => void weavePass()}
           />
         {:else if view === "graph"}
-          {#if tree}
+          {#if libraryError}
+            <EmptyState
+              title="The library did not load"
+              description={libraryError}
+            />
+          {:else if tree && LibraryView}
             <!-- The tree, not the graph payload: it carries folders, including
                  empty ones, and needs no index. A folder you just made is a
                  shelf immediately, and can be dropped onto. -->
-            <Library
+            <LibraryView
               {tree}
               vaultName={status.vault.name}
               {selected}
