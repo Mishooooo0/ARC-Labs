@@ -75,10 +75,19 @@
    * are read out through `getComputedStyle` in `lib/finishes.ts`, because
    * three.js materials need a colour value and cannot resolve a CSS variable.
    *
-   * `book` and `book-alt` (canvases) are the two spine colours. Neither may be
-   * amber or blue in any finish: those two hues mean authorship and nothing
-   * else, and a shelf of amber books would be the largest possible lie about
-   * who wrote what.
+   * `spine-1` to `spine-6` are the book cloths. A note takes one of the six by a
+   * hash of its path, so a shelf looks like a shelf rather than a row of
+   * identical slabs, and the same note is always the same colour. `canvas` is
+   * kept separate so a board still reads differently from a note.
+   *
+   * **Every one of them is low-saturation, and that is the rule rather than a
+   * preference.** `--arc-human` is a *saturated* amber and `--arc-agent` a
+   * saturated blue, and those two mean authorship and nothing else anywhere in
+   * the product. Real book cloth is mostly warm neutrals, which live in amber's
+   * hue family — so the line that keeps constraint 6 intact is drawn at
+   * saturation, not at hue. Nothing here goes above roughly 20%, which is far
+   * enough from the two signalling colours that no book can be mistaken for
+   * one. Add a seventh at full saturation and that stops being true.
    *
    * There are two text colours because there are two grounds. `label` is a
    * folder name printed on the front edge of its board, so it has to read
@@ -97,8 +106,13 @@
   --arc-finish-walnut-board: #7c5738;
   --arc-finish-walnut-back: #492f1e;
   --arc-finish-walnut-edge: #8d6844;
-  --arc-finish-walnut-book: #cbbb9f;
-  --arc-finish-walnut-book-alt: #a78f6c;
+  --arc-finish-walnut-spine-1: #cbbb9f;
+  --arc-finish-walnut-spine-2: #b3a898;
+  --arc-finish-walnut-spine-3: #a9b0a4;
+  --arc-finish-walnut-spine-4: #c2aca6;
+  --arc-finish-walnut-spine-5: #a6aeb2;
+  --arc-finish-walnut-spine-6: #bcb2bb;
+  --arc-finish-walnut-canvas: #8d7c62;
   --arc-finish-walnut-label: #d8c4a6;
   --arc-finish-walnut-ink: #4a3a26;
 
@@ -109,8 +123,13 @@
   --arc-finish-white-board: #f2eee7;
   --arc-finish-white-back: #d5cec3;
   --arc-finish-white-edge: #fbf8f3;
-  --arc-finish-white-book: #6f6c65;
-  --arc-finish-white-book-alt: #918d84;
+  --arc-finish-white-spine-1: #6f6c65;
+  --arc-finish-white-spine-2: #7a6f66;
+  --arc-finish-white-spine-3: #67736c;
+  --arc-finish-white-spine-4: #7d6b6b;
+  --arc-finish-white-spine-5: #6a7176;
+  --arc-finish-white-spine-6: #746b78;
+  --arc-finish-white-canvas: #9c968c;
   --arc-finish-white-label: #4a4741;
   --arc-finish-white-ink: #efede8;
 
@@ -120,8 +139,13 @@
   --arc-finish-emerald-board: #386e5e;
   --arc-finish-emerald-back: #1f4237;
   --arc-finish-emerald-edge: #5f9e8c;
-  --arc-finish-emerald-book: #c6d8d0;
-  --arc-finish-emerald-book-alt: #9cbab0;
+  --arc-finish-emerald-spine-1: #c6d8d0;
+  --arc-finish-emerald-spine-2: #b8c9be;
+  --arc-finish-emerald-spine-3: #cdcfc4;
+  --arc-finish-emerald-spine-4: #c9c0cb;
+  --arc-finish-emerald-spine-5: #bfd0d3;
+  --arc-finish-emerald-spine-6: #d0c7bb;
+  --arc-finish-emerald-canvas: #86a89c;
   --arc-finish-emerald-label: #cfe0d9;
   --arc-finish-emerald-ink: #23453b;
 

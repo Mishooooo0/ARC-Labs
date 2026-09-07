@@ -198,20 +198,57 @@ function isNote(e: TreeEntry): boolean {
 }
 
 /**
- * A stable number in −1..1 from a note's path.
+ * FNV-1a over a note's path.
  *
- * The lean has to be the same every time the same vault is drawn, or unfiled
- * notes would reshuffle on every keystroke that refreshes the tree — which
- * reads as a bug rather than as mess. FNV-1a, because it is six lines and needs
- * no dependency.
+ * Everything derived from a note's identity goes through this, so it is the
+ * same every time the same vault is drawn. A lean that reshuffled on every
+ * keystroke that refreshes the tree would read as a bug rather than as mess,
+ * and a book that changed colour when you renamed its neighbour would be worse.
+ * Six lines, and no dependency.
  */
-function jitter(path: string): number {
+function hashOf(path: string): number {
   let h = 2166136261;
   for (let i = 0; i < path.length; i++) {
     h ^= path.charCodeAt(i);
     h = Math.imul(h, 16777619);
   }
-  return ((h >>> 0) % 2001) / 1000 - 1;
+  return h >>> 0;
+}
+
+/** A stable number in −1..1 from a note's path. */
+function jitter(path: string): number {
+  return (hashOf(path) % 2001) / 1000 - 1;
+}
+
+/**
+ * Which of `n` book cloths this note is bound in.
+ *
+ * By path, so a note keeps its colour for as long as it keeps its name — and
+ * gets a new one when it moves, which is honest: it is a different note on a
+ * different shelf.
+ */
+export function spineOf(path: string, n: number): number {
+  return n <= 0 ? 0 : hashOf(path) % n;
+}
+
+/**
+ * One frame of a 0→1 arrival.
+ *
+ * Shared by the two things that arrive — a board sliding into the case and a
+ * book being set down on it — so there is one place the motion gate is obeyed
+ * rather than two that can drift apart. `motion` 0 lands it immediately, which
+ * is the accessibility gate and is why this is a function a test can call
+ * instead of arithmetic buried in a draw loop.
+ */
+export function easeIn(progress: number, motion: number): number {
+  if (motion <= 0) return 1;
+  // The whole step scales, the constant nudge included. Written as
+  // `… * (0.16 * motion) + 0.015` the nudge ignored the multiplier, so halving
+  // motion barely slowed anything down: only 0 did anything, and every value
+  // between was decoration. A multiplier that only means something at one end
+  // is not a multiplier.
+  const next = progress + ((1 - progress) * 0.16 + 0.015) * motion;
+  return next >= 0.999 ? 1 : next;
 }
 
 /** What a compartment will be built from, before any geometry exists. */
@@ -451,7 +488,9 @@ export function stepToward(live: Live, to: { x: number; y: number }, motion: num
   }
   live.x += (to.x - live.x) * (0.18 * motion);
   live.y += (to.y - live.y) * (0.18 * motion);
-  live.spawn = Math.min(1, live.spawn + (1 - live.spawn) * (0.12 * motion) + 0.01);
+  // Scaled whole, for the reason in `easeIn`: a nudge outside the multiplier
+  // makes every setting between 0 and 1 behave almost the same.
+  live.spawn = Math.min(1, live.spawn + ((1 - live.spawn) * 0.12 + 0.01) * motion);
 
   if (Math.abs(to.x - live.x) < 0.3 && Math.abs(to.y - live.y) < 0.3 && live.spawn >= 1) {
     live.x = to.x;

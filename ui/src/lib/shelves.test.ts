@@ -7,6 +7,8 @@ import {
   INDENT,
   layout,
   movedInto,
+  easeIn,
+  spineOf,
   spineWidth,
   stepToward,
   type Layout,
@@ -421,6 +423,88 @@ describe("the motion budget", () => {
     stepToward(slow, target, 0.5);
     stepToward(fast, target, 1.5);
     expect(fast.x).toBeGreaterThan(slow.x);
+  });
+});
+
+describe("binding the books", () => {
+  it("gives a note the same cloth every time", () => {
+    expect(spineOf("ARC/notes.md", 6)).toBe(spineOf("ARC/notes.md", 6));
+  });
+
+  it("spreads them across the whole palette", () => {
+    const seen = new Set<number>();
+    for (let i = 0; i < 200; i++) seen.add(spineOf(`F/note-${i}.md`, 6));
+    // Six cloths and two hundred notes: a hash that landed on one or two would
+    // give a shelf of identical slabs, which is the thing this exists to avoid.
+    expect(seen.size).toBe(6);
+  });
+
+  it("stays inside the palette it was given", () => {
+    for (let i = 0; i < 50; i++) {
+      const n = spineOf(`n${i}.md`, 6);
+      expect(n).toBeGreaterThanOrEqual(0);
+      expect(n).toBeLessThan(6);
+    }
+    // An empty palette must not produce an out-of-range index rather than
+    // throwing somewhere further down.
+    expect(spineOf("a.md", 0)).toBe(0);
+  });
+});
+
+describe("arriving", () => {
+  /**
+   * The same accessibility gate `stepToward` carries, on the path a board and a
+   * placed book share. Motion 0 has to land them in one frame; two easings that
+   * each obey it separately is how one of them ends up not obeying it.
+   */
+  it("lands immediately with motion 0", () => {
+    expect(easeIn(0, 0)).toBe(1);
+    expect(easeIn(0.4, 0)).toBe(1);
+  });
+
+  it("eases in rather than jumping when motion is on", () => {
+    const first = easeIn(0, 1);
+    expect(first).toBeGreaterThan(0);
+    expect(first).toBeLessThan(1);
+  });
+
+  it("arrives exactly at 1, so nothing animates for ever", () => {
+    let p = 0;
+    let frames = 0;
+    while (p < 1 && frames < 600) {
+      p = easeIn(p, 1);
+      frames++;
+    }
+    expect(p).toBe(1);
+    expect(frames).toBeLessThan(600);
+  });
+
+  it("moves faster the higher the multiplier", () => {
+    expect(easeIn(0, 1.5)).toBeGreaterThan(easeIn(0, 0.5));
+  });
+
+  /**
+   * The multiplier has to mean something across its whole range, not just at
+   * zero. It did not: a constant nudge sat outside it, so motion 0.1 ran at
+   * nearly full speed and every setting between 0 and 1 looked the same.
+   */
+  it("scales the whole step, so a tenth is roughly a tenth", () => {
+    const full = easeIn(0, 1);
+    const tenth = easeIn(0, 0.1);
+    expect(tenth).toBeCloseTo(full * 0.1, 6);
+  });
+
+  it("takes far more frames at low motion than at full", () => {
+    const frames = (motion: number) => {
+      let p = 0;
+      let n = 0;
+      while (p < 1 && n < 5000) {
+        p = easeIn(p, motion);
+        n++;
+      }
+      return n;
+    };
+    expect(frames(0.1)).toBeGreaterThan(frames(1) * 5);
   });
 });
 

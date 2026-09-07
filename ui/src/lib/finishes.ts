@@ -31,9 +31,18 @@ export interface Finish {
   back: string;
   /** Front edges, where the light lands. */
   edge: string;
-  /** Spines, and canvases. Never amber or blue — those two mean authorship. */
-  book: string;
-  bookAlt: string;
+  /**
+   * The six book cloths. A note takes one by a hash of its path.
+   *
+   * All low-saturation, and that is load-bearing rather than taste: the two
+   * reserved authorship hues are a *saturated* amber and a saturated blue, and
+   * book cloth is mostly warm neutrals that share amber's hue family. Drawing
+   * the line at saturation is what lets books look like books without any of
+   * them being mistaken for a claim about who wrote it.
+   */
+  spines: string[];
+  /** Canvases, kept apart from the six so a board still reads as a board. */
+  canvas: string;
   /** Folder names, printed on the front edge of each board — read against wood. */
   label: string;
   /** Note names, printed up a spine — read against a book, not against wood. */
@@ -70,8 +79,8 @@ export function readFinish(el: HTMLElement, name: FinishName): Finish {
     board: get("board"),
     back: get("back"),
     edge: get("edge"),
-    book: get("book"),
-    bookAlt: get("book-alt"),
+    spines: [1, 2, 3, 4, 5, 6].map((i) => get(`spine-${i}`)),
+    canvas: get("canvas"),
     label: get("label"),
     ink: get("ink"),
     grain: GRAIN[name],

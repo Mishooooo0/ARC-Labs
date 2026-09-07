@@ -19,12 +19,20 @@ import { CASE_SIDE, CASE_TOP, BOARD_T, OVERHANG, PLINTH } from "./shelves";
 /** Layout units per world unit. A book ends up roughly 0.7 units tall. */
 export const SCALE = 100;
 
-/** How deep the carcass is, front to back. Constant: depth is not data. */
-export const CASE_DEPTH = 0.34;
+/**
+ * How deep the carcass is, front to back. Constant: depth is not data.
+ *
+ * Half again what it was. At 0.34 the case read as a facade — a flat panel with
+ * boards drawn on it — because there was barely enough side to catch the light
+ * when you turned it. The books scale with it rather than staying put, so they
+ * still fill a little under half the depth, which is what books do on a real
+ * shelf: proud of nothing, with air behind them.
+ */
+export const CASE_DEPTH = 0.51;
 /** The back panel, which is thin and is what stops you reaching in from behind. */
 export const BACK_T = 0.022;
 /** How far a book sticks out. Less than the case, so books sit *inside* it. */
-export const BOOK_DEPTH = 0.16;
+export const BOOK_DEPTH = 0.24;
 /** A book's front face sits this far behind the case's front edge. */
 const RECESS = 0.03;
 

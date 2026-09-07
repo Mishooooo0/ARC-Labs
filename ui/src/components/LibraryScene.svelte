@@ -52,7 +52,7 @@
   import { interactivity, OrbitControls } from "@threlte/extras";
   import { Color, InstancedMesh, Object3D, Vector3 } from "three";
   import type { Book, Compartment, Layout } from "../lib/shelves";
-  import { stepToward, type Live } from "../lib/shelves";
+  import { easeIn, spineOf, stepToward, type Live } from "../lib/shelves";
   import type { ScreenLabel } from "../lib/scene";
   import {
     boardBox,
@@ -173,10 +173,34 @@
   const live = new Map<string, Live>();
   let animating = true;
 
+  /** How a book arrives: from above its slot, out in front, and tipped. */
+  const PLACE_DROP = 46;
+  const PLACE_REACH = 0.16;
+  const PLACE_TILT = 0.22;
+  /**
+   * How far each board has reached across its bay, 0→1, by folder path.
+   *
+   * A new board grows from the left wall to the right, which is what a shelf
+   * being fitted looks like. The first attempt slid it in along z, from in
+   * front of the case to its seat — physically the truer motion, and almost
+   * invisible: the default view is head-on, and a box moving straight at the
+   * camera barely changes on screen. It animated correctly and looked like
+   * nothing at all. Motion has to be perpendicular to the view to be motion.
+   *
+   * A board is a handful of meshes rather than five thousand, so these stay
+   * declarative and reactive — the cost is ten component updates for the half
+   * second one is arriving, which is nothing. Books get the imperative
+   * treatment because five thousand of them would not.
+   */
+  const boards = new Map<string, number>();
+  let boardIn = $state<number[]>([]);
+
   $effect(() => {
     // A new layout means a settle, and a chance to forget books that are gone.
     const paths = new Set(books.map((b) => b.path));
     for (const k of live.keys()) if (!paths.has(k)) live.delete(k);
+    const shelves = new Set(model.bookcase.compartments.map((c) => c.path));
+    for (const k of boards.keys()) if (!shelves.has(k)) boards.delete(k);
     dirty = true;
     animating = true;
   });
@@ -194,26 +218,66 @@
 
   function colourOf(b: Book): string {
     if (selected === b.path || hovered?.path === b.path) return accent;
-    return b.isCanvas ? finish.bookAlt : finish.book;
+    if (b.isCanvas) return finish.canvas;
+    // Bound in one of six cloths, chosen by the note's path, so a shelf looks
+    // like a shelf instead of a row of identical slabs — and so the same note is
+    // the same colour every time you open the vault.
+    return finish.spines[spineOf(b.path, finish.spines.length)]!;
   }
 
   /**
-   * Where a book is *this frame*, part-way through rising onto its shelf.
+   * A book *being put on a shelf*, rather than growing out of one.
    *
-   * One function because the drawing and the label have to agree about it. They
-   * did not: the label used the book's final size and simply refused to appear
-   * until the spawn finished. Any interruption then left a bookcase with no
-   * names on it — and `requestAnimationFrame` stops while a tab is in the
-   * background, so \"interrupted\" is just \"switched away and came back\".
+   * The first version scaled a book up from nothing about its foot, which reads
+   * as extrusion — the book is manufactured in place. A book arrives: it comes
+   * in from in front of the case and above its slot, tipped, and settles
+   * upright. So the size is constant and it is the *position* that animates.
+   * `stepToward` already eases x and y, so starting a new book above its slot
+   * gets the descent for free; `spawn` is what pulls it back into the case and
+   * straightens it.
    *
-   * A book grows about its foot. The foot is `y + h`, so a shorter book has to
-   * start further down, or it rises off its own shelf as it grows.
+   * One function, because the drawing and the label have to agree about where a
+   * book is. They did not once before: the label used the book's final size and
+   * refused to appear until the spawn had finished, so any interruption left a
+   * bookcase with no names on it — and `requestAnimationFrame` stops while a tab
+   * is in the background, which makes "interrupted" just "switched away".
    */
-  function livePose(b: Book): Book {
+  function placed(b: Book): { book: Book; dz: number } {
     const l = live.get(b.path);
-    if (!l) return b;
-    const h = b.h * Math.max(0.02, l.spawn);
-    return { ...b, x: l.x, y: l.y + b.h - h, h };
+    if (!l) return { book: b, dz: 0 };
+    const arriving = 1 - l.spawn;
+    return {
+      // Still tipped while it is on its way in, straightening as it lands.
+      book: { ...b, x: l.x, y: l.y, lean: b.lean + arriving * PLACE_TILT },
+      dz: arriving * PLACE_REACH,
+    };
+  }
+
+  /**
+   * Slide any newly created board home. Returns whether one is still moving.
+   *
+   * A folder becoming a shelf used to be a board simply existing where there had
+   * been none. Now it arrives the way a shelf does: pushed in from the front of
+   * the case until it seats. Same `easeIn` the books use, so Motion 0 lands both
+   * in one frame rather than one of them being forgotten.
+   */
+  function slideBoards(): boolean {
+    const shelves = model.bookcase.compartments.filter((c) => !c.isFloor);
+    const next: number[] = [];
+    let busy = false;
+
+    for (const c of shelves) {
+      const p = easeIn(boards.get(c.path) ?? 0, motion);
+      boards.set(c.path, p);
+      if (p < 1) busy = true;
+      next.push(p);
+    }
+
+    // Only hand Svelte a new array when it would actually draw differently.
+    if (next.length !== boardIn.length || next.some((z, i) => z !== boardIn[i])) {
+      boardIn = next;
+    }
+    return busy;
   }
 
   /**
@@ -230,9 +294,11 @@
 
       let l = live.get(b.path);
       if (!l) {
-        // A book that has just appeared rises out of its own shelf rather than
-        // blinking into existence, so creating a note lands somewhere visible.
-        l = { x: b.x, y: b.y + b.h, spawn: 0 };
+        // Above its slot: `stepToward` eases y downward from here, which is the
+        // descent. `spawn` carries the rest — the reach in from the front and
+        // the tip straightening — so a new note is *put* somewhere rather than
+        // appearing there.
+        l = { x: b.x, y: b.y - PLACE_DROP, spawn: 0 };
         live.set(b.path, l);
       }
       if (stepToward(l, { x: b.x, y: b.y }, motion)) busy = true;
@@ -244,8 +310,9 @@
         dummy.position.set(0, 0, 0);
         dummy.rotation.set(0, 0, 0);
       } else {
-        const pose = bookPose(livePose(b));
-        dummy.position.set(pose.x, pose.y, pose.z);
+        const p = placed(b);
+        const pose = bookPose(p.book);
+        dummy.position.set(pose.x, pose.y, pose.z + p.dz);
         dummy.rotation.set(0, 0, pose.lean);
         dummy.scale.set(pose.w, pose.h, pose.d);
       }
@@ -295,7 +362,8 @@
     }
 
     if (dirty || animating) {
-      animating = draw();
+      const moving = slideBoards();
+      animating = draw() || moving;
       if (animating) {
         dirty = true;
         // Rendering is on demand, and an instance matrix written by hand is not
@@ -367,10 +435,10 @@
         // The book as it is right now, not as it will be. A name that waits for
         // the spawn to finish never appears at all if the spawn is interrupted,
         // and it grows out of the shelf with its book this way instead.
-        const at = livePose(b);
-        const ends = spineEnds(at);
-        const foot = project(ends.foot[0], ends.foot[1], ends.foot[2]);
-        const head = project(ends.head[0], ends.head[1], ends.head[2]);
+        const at = placed(b);
+        const ends = spineEnds(at.book);
+        const foot = project(ends.foot[0], ends.foot[1], ends.foot[2] + at.dz);
+        const head = project(ends.head[0], ends.head[1], ends.head[2] + at.dz);
         if (!foot || !head) continue;
 
         // Along the book's *projected* axis, which is only straight up the
@@ -384,9 +452,9 @@
         // And the spine has to be thick enough to hold a line of text across
         // it, or the title sits on the two books either side of the one it
         // names.
-        const pose = bookPose(at);
-        const side = project(pose.x + pose.w / 2, pose.y, pose.z + pose.d / 2);
-        const mid = project(pose.x, pose.y, pose.z + pose.d / 2);
+        const pose = bookPose(at.book);
+        const side = project(pose.x + pose.w / 2, pose.y, pose.z + pose.d / 2 + at.dz);
+        const mid = project(pose.x, pose.y, pose.z + pose.d / 2 + at.dz);
         if (!side || !mid || Math.hypot(side.x - mid.x, side.y - mid.y) * 2 < 11) continue;
 
         out.push({
@@ -517,7 +585,10 @@
     {@const board = model.bookcase.boards[i]}
     {#if board}
       {@const b = boardBox(board)}
-      <T.Mesh position={[b.x, b.y, b.z]}>
+      <!-- Reaching across from the left wall: the width scales and the centre
+           moves with it, so the left end stays put and the right end travels. -->
+      {@const p = boardIn[i] ?? 1}
+      <T.Mesh position={[b.x - (b.w * (1 - p)) / 2, b.y, b.z]} scale={[p, 1, 1]}>
         <T.BoxGeometry args={[b.w, b.h, b.d]} />
         <T.MeshStandardMaterial
           color={target?.path === comp.path ? accent : finish.board}
